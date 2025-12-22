@@ -1,0 +1,5 @@
+backend/.env
+backend/.env.*
+__pycache__/
+*.pyc
+bootstrap_admin.ps1
