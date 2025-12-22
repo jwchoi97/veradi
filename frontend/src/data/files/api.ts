@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: "http://localhost:8000", // FastAPI 주소
+  baseURL: "https://veradi.onrender.com/", // FastAPI 주소
 });
 
 ///////////////

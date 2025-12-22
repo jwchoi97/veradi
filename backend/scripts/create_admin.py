@@ -1,4 +1,8 @@
 # scripts/create_admin.py
+# python -m scripts.create_admin
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import sys
 from getpass import getpass

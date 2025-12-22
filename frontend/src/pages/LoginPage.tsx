@@ -21,7 +21,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       // ✅ 여기만 너희 FastAPI 로그인 API에 맞춰 바꾸면 됨
-      const res = await fetch("http://127.0.0.1:8000/auth/login", {
+      const res = await fetch("https://veradi.onrender.com/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
