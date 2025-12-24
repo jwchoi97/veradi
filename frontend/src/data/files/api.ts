@@ -1,8 +1,14 @@
 import axios from "axios";
 
+// const api = axios.create({
+//   baseURL: "https://veradi.onrender.com/", // FastAPI 주소
+// });
 const api = axios.create({
-  baseURL: "https://veradi.onrender.com/", // FastAPI 주소
+  baseURL: import.meta.env.VITE_API_BASE_URL,
+  withCredentials: true, // 쿠키/세션 쓰면 필요
 });
+
+export default api;
 
 ///////////////
 // INTERFACE //

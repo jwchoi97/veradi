@@ -28,3 +28,7 @@ app.add_middleware(
 app.include_router(projects.router)
 app.include_router(files.router)
 app.include_router(auth.router)
+
+origins = get_cors_origins()
+print("CORS_ORIGINS parsed =", origins)
+

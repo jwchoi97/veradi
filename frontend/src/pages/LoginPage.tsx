@@ -14,6 +14,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   const from = (loc.state as any)?.from?.pathname ?? "/";
+  const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,7 +22,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       // ✅ 여기만 너희 FastAPI 로그인 API에 맞춰 바꾸면 됨
-      const res = await fetch("https://veradi.onrender.com/auth/login", {
+      const res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
