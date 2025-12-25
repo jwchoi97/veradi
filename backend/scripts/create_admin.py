@@ -7,14 +7,12 @@ import os
 import sys
 from getpass import getpass
 
-#from passlib.context import CryptContext
 from app.security import hash_password
 
 # Adjust imports to match your project structure
 from app.mariadb.database import SessionLocal
 from app.mariadb.models import User, UserRole, Department
 
-#pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def main() -> int:
     db = SessionLocal()
