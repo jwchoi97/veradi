@@ -55,6 +55,7 @@ class UserRole(str, enum.Enum):
     ADMIN = "ADMIN"
     LEAD = "LEAD"
     MEMBER = "MEMBER"
+    PENDING = "PENDING"
 
 class Department(str, enum.Enum):
     ADMIN = "ADMIN"

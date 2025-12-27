@@ -84,9 +84,10 @@ class LoginResponse(BaseModel):
 class SignupRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=8, max_length=128)
+    password_confirm: str = Field(min_length=8)
     department: Department
     phone_number: str = Field(min_length=8, max_length=32)
-    role: Optional[UserRole] = None  # server should ignore this for public signup
+    # role: Optional[UserRole] = None  # server should ignore this for public signup
 
 
 class UserOut(BaseModel):
@@ -99,3 +100,20 @@ class UserOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+class PendingUserOut(BaseModel):
+    id: int
+    username: str
+    role: UserRole
+    department: Department
+    phone_number: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class PendingUserListOut(BaseModel):
+    total: int
+    items: List[PendingUserOut]
+
+class ApproveUserRequest(BaseModel):
+    role: UserRole

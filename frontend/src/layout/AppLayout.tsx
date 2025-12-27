@@ -1,10 +1,19 @@
 import { Outlet, NavLink } from "react-router-dom";
 import TopBar from "./TopBar";
 import { ROUTE_MODULES } from "@/router/routes";
+import { getAuthedUser } from "@/auth";
 
 type NavState = { isActive: boolean; isPending: boolean; isTransitioning?: boolean };
 
+
+
 export default function AppLayout() {
+  const me = getAuthedUser();
+  const menuModules = ROUTE_MODULES.filter((m) => {
+    // Hide admin module unless ADMIN
+    if (m.base === "/erp/admin") return me?.role === "ADMIN";
+    return true;
+  });
   return (
     <div className="app-shell">
       <TopBar />
@@ -14,7 +23,7 @@ export default function AppLayout() {
           <div className="side-title">ERP</div>
 
           <nav className="side-nav">
-            {ROUTE_MODULES.map((m) => (
+            {menuModules.map((m) => (
               <NavLink
                 key={m.base}
                 to={m.base}

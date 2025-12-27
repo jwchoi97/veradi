@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import PendingApprovalsSection from "@/pages/PendingApprovalsSection";
 import {
   fetchProjects,
   createProject,
@@ -242,6 +243,10 @@ export default function ProjectAdminPage() {
           </div>
         </div>
       )}
+      <div className="space-y-6">
+        {/* 기존 관리자 페이지 내용 */}
+        <PendingApprovalsSection />
+      </div>
     </div>
   );
 }

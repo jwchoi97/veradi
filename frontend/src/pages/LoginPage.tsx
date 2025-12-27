@@ -1,8 +1,15 @@
 import React, { useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
-import { setToken } from "../auth";
+import { useNavigate, useLocation, Link } from "react-router-dom";
+import { setToken, setAuthedUser } from "../auth";
 
-type LoginResponse = { access_token: string; token_type?: string };
+
+// type LoginResponse = { access_token: string; token_type?: string };
+type LoginResponse = {
+  id: number;
+  username: string;
+  role: "ADMIN" | "LEAD" | "MEMBER" | "PENDING";
+  department: string;
+};
 
 export default function LoginPage() {
   const nav = useNavigate();
@@ -13,7 +20,8 @@ export default function LoginPage() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const from = (loc.state as any)?.from?.pathname ?? "/";
+  // const from = (loc.state as any)?.from?.pathname ?? "/";
+  const from = (loc.state as any)?.from ?? "/home"; // 너 routing에 맞게
   const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -34,7 +42,17 @@ export default function LoginPage() {
       }
 
       const data = (await res.json()) as LoginResponse;
-      setToken(data.access_token);
+      // setToken(data.access_token);
+      if (data.role === "PENDING") {
+        throw new Error("승인 대기 중입니다. 관리자 승인 후 로그인할 수 있어요.");
+      }
+
+      setAuthedUser({
+        id: data.id,
+        username: data.username,
+        role: data.role,
+        department: data.department,
+      });
 
       nav(from, { replace: true });
     } catch (e: any) {
@@ -87,6 +105,15 @@ export default function LoginPage() {
             {loading ? "Signing in..." : "Sign in"}
           </button>
         </form>
+        <div className="mt-4 flex items-center justify-between text-sm">
+          <Link to="/signup" className="text-gray-600 hover:underline">
+            회원가입
+          </Link>
+
+          <Link to="/forgot-password" className="text-gray-600 hover:underline">
+            비밀번호를 잊으셨나요?
+          </Link>
+        </div>
       </div>
     </div>
   );
