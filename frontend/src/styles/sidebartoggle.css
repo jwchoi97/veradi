@@ -1,0 +1,60 @@
+/* TopBar left toggle button */
+.sidebar-toggle {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 20px;
+  line-height: 1;
+  margin-right: 6px;
+}
+
+.sidebar-toggle:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.app-body {
+  display: flex;
+  min-height: calc(100vh - 56px);
+  position: relative; /* overlay/transform 안정화 */
+}
+
+/* sidebar는 폭 고정 */
+.sidebar {
+  width: 260px;
+  flex: 0 0 260px;
+  overflow: hidden;
+  border-right: 1px solid rgba(0,0,0,0.08);
+  background: #fff;
+
+  /* ✅ 슬라이드 애니메이션 */
+  transform: translateX(0);
+  transition: transform 220ms ease;
+  will-change: transform;
+}
+
+/* ✅ 접힐 때: 폭을 줄이지 말고, 그냥 왼쪽으로 빠져나가게 */
+.app-shell.sb-hidden .sidebar {
+  transform: translateX(-100%);
+  border-right-color: transparent;
+}
+
+/*
+  ✅ main이 그 자리를 먹게 하려면,
+  sidebar가 flex 흐름에서 "자리"를 차지하지 않아야 함.
+  그래서 sb-hidden일 때는 sidebar를 absolute로 바꿔서 레이아웃에서 제거.
+*/
+.app-shell.sb-hidden .sidebar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  /* width는 그대로 260px */
+}
+
+/* main은 항상 flex로 꽉 */
+.main {
+  flex: 1 1 auto;
+  min-width: 0;
+}

@@ -1,43 +1,118 @@
+import React from "react";
+import "./TopBar.css";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { clearToken } from "@/auth";
 
-export default function TopBar() {
+type AuthedUser = {
+  id: number;
+  username: string;
+  name?: string | null;
+  role: string;
+
+  // legacy single
+  department: string;
+
+  // NEW multi (optional, backward compatible)
+  departments?: string[] | null;
+};
+
+type TopBarProps = {
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
+  me: AuthedUser | null;
+};
+
+function prettyDepartment(dep?: string | null): string {
+  if (!dep) return "-";
+  if (dep === "ADMIN") return "ADMIN";
+  return dep;
+}
+
+function normalizeDepartments(me: AuthedUser | null): string[] {
+  if (!me) return [];
+
+  const raw = Array.isArray(me.departments) ? me.departments : [];
+  const cleaned = raw
+    .map((d) => (typeof d === "string" ? d.trim() : ""))
+    .filter((d) => d.length > 0);
+
+  // If departments exist, prefer them; otherwise fallback to legacy single.
+  const base = cleaned.length > 0 ? cleaned : [me.department].filter(Boolean);
+
+  // Dedup preserving order
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const d of base) {
+    if (seen.has(d)) continue;
+    seen.add(d);
+    out.push(d);
+  }
+  return out;
+}
+
+function title(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+export default function TopBar({ sidebarOpen, onToggleSidebar, me }: TopBarProps) {
   const loc = useLocation();
   const navigate = useNavigate();
 
-  // Remove empty segments
   const rawSegments = loc.pathname.split("/").filter(Boolean);
+  const lower = rawSegments.map((s) => s.toLowerCase());
 
-  // ✅ Remove "home" duplication: if path is "/home", show only "Home"
-  const segments = rawSegments[0] === "home" ? rawSegments.slice(1) : rawSegments;
+  // ---- page detection ----
+  const mockIdx = lower.indexOf("mock");
+  const adminIdx = lower.indexOf("admin");
+
+  const isMockPage = mockIdx >= 0;
+  const isAdminPage = adminIdx >= 0;
+
+  // ---- real existing route prefix ----
+  const mockHref = isMockPage ? "/" + rawSegments.slice(0, mockIdx + 1).join("/") : null;
+
+  const adminHref = isAdminPage ? "/" + rawSegments.slice(0, adminIdx + 1).join("/") : null;
 
   const onLogout = () => {
     clearToken();
     navigate("/login", { replace: true });
   };
 
+  const displayName = (me?.name && String(me.name).trim()) || me?.username || "Unknown";
+  const departments = normalizeDepartments(me);
+
   const breadcrumb = (
     <nav className="breadcrumb" aria-label="Breadcrumb">
       <Link to="/">Home</Link>
 
-      {segments.map((seg, idx) => {
-        // Rebuild "to" from rawSegments, but skipping removed "home" means:
-        // If segments is sliced, the URL should start from "/home/..."
-        const base = rawSegments[0] === "home" ? ["home"] : [];
-        const to = "/" + [...base, ...segments.slice(0, idx + 1)].join("/");
+      {isMockPage && mockHref && (
+        <span>
+          <span className="sep">›</span>
+          <Link to={mockHref}>{title("mock")}</Link>
+        </span>
+      )}
 
-        return (
-          <span key={to}>
-            <span className="sep">›</span>
-            <Link to={to}>{seg}</Link>
-          </span>
-        );
-      })}
+      {isAdminPage && adminHref && (
+        <span>
+          <span className="sep">›</span>
+          <Link to={adminHref}>{title("admin")}</Link>
+        </span>
+      )}
     </nav>
   );
 
   return (
     <header className="topbar">
+      <button
+        type="button"
+        onClick={onToggleSidebar}
+        className="sidebar-toggle"
+        aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+        title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+      >
+        {sidebarOpen ? "×" : "≡"}
+      </button>
+
       <div className="brand">
         <Link to="/" className="logo">
           VERADI CONTENTS ERP
@@ -46,10 +121,27 @@ export default function TopBar() {
 
       <div className="grow" />
 
-      {/* ✅ Wrap breadcrumb to prevent layout shift */}
       <div className="topbar-breadcrumb">{breadcrumb}</div>
 
       <div className="topbar-right">
+        {me ? (
+          <div className="topbar-me" title={`${me.username} · ${me.role}`}>
+            <span className="me-name">{displayName}</span>
+
+            {departments.length > 0 ? (
+              <span className="me-deps" aria-label="Departments">
+                {departments.map((d) => (
+                  <span key={d} className="me-pill">
+                    {prettyDepartment(d)}
+                  </span>
+                ))}
+              </span>
+            ) : (
+              <span className="me-pill">{prettyDepartment(me.department)}</span>
+            )}
+          </div>
+        ) : null}
+
         <button onClick={onLogout} className="logout-btn">
           Logout
         </button>
@@ -58,53 +150,119 @@ export default function TopBar() {
   );
 }
 
+
+// // FILE: frontend/src/layout/TopBar.tsx
+
+// import React from "react";
+// import "./TopBar.css";
 // import { Link, useLocation, useNavigate } from "react-router-dom";
 // import { clearToken } from "@/auth";
 
-// export default function TopBar() {
+// type AuthedUser = {
+//   id: number;
+//   username: string;
+//   name?: string | null;
+//   role: string;
+//   department: string;
+// };
+
+// type TopBarProps = {
+//   sidebarOpen: boolean;
+//   onToggleSidebar: () => void;
+//   me: AuthedUser | null;
+// };
+
+// function prettyDepartment(dep?: string | null): string {
+//   if (!dep) return "-";
+//   if (dep === "ADMIN") return "ADMIN";
+//   return dep;
+// }
+
+// function title(s: string): string {
+//   return s.charAt(0).toUpperCase() + s.slice(1);
+// }
+
+// export default function TopBar({ sidebarOpen, onToggleSidebar, me }: TopBarProps) {
 //   const loc = useLocation();
 //   const navigate = useNavigate();
-//   const segments = loc.pathname.split("/").filter(Boolean);
+
+//   const rawSegments = loc.pathname.split("/").filter(Boolean);
+//   const lower = rawSegments.map((s) => s.toLowerCase());
+
+//   // ---- page detection ----
+//   const mockIdx = lower.indexOf("mock");
+//   const adminIdx = lower.indexOf("admin");
+
+//   const isMockPage = mockIdx >= 0;
+//   const isAdminPage = adminIdx >= 0;
+
+//   // ---- real existing route prefix ----
+//   const mockHref = isMockPage
+//     ? "/" + rawSegments.slice(0, mockIdx + 1).join("/")
+//     : null;
+
+//   const adminHref = isAdminPage
+//     ? "/" + rawSegments.slice(0, adminIdx + 1).join("/")
+//     : null;
 
 //   const onLogout = () => {
 //     clearToken();
 //     navigate("/login", { replace: true });
 //   };
 
+//   const displayName = (me?.name && String(me.name).trim()) || me?.username || "Unknown";
+
 //   const breadcrumb = (
-//     <nav className="breadcrumb">
+//     <nav className="breadcrumb" aria-label="Breadcrumb">
 //       <Link to="/">Home</Link>
-//       {segments.map((seg, idx) => {
-//         const to = "/" + segments.slice(0, idx + 1).join("/");
-//         return (
-//           <span key={to}>
-//             <span className="sep">›</span>
-//             <Link to={to}>{seg}</Link>
-//           </span>
-//         );
-//       })}
+
+//       {isMockPage && mockHref && (
+//         <span>
+//           <span className="sep">›</span>
+//           <Link to={mockHref}>{title("mock")}</Link>
+//         </span>
+//       )}
+
+//       {isAdminPage && adminHref && (
+//         <span>
+//           <span className="sep">›</span>
+//           <Link to={adminHref}>{title("admin")}</Link>
+//         </span>
+//       )}
 //     </nav>
 //   );
 
 //   return (
 //     <header className="topbar">
-//       {/* 좌측: 브랜드 */}
+//       <button
+//         type="button"
+//         onClick={onToggleSidebar}
+//         className="sidebar-toggle"
+//         aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+//         title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+//       >
+//         {sidebarOpen ? "×" : "≡"}
+//       </button>
+
 //       <div className="brand">
 //         <Link to="/" className="logo">
 //           VERADI CONTENTS ERP
 //         </Link>
 //       </div>
 
-//       {/* 가운데: breadcrumb */}
 //       <div className="grow" />
-//       {breadcrumb}
 
-//       {/* 우측: 로그아웃 */}
+//       <div className="topbar-breadcrumb">{breadcrumb}</div>
+
 //       <div className="topbar-right">
-//         <button
-//           onClick={onLogout}
-//           className="logout-btn"
-//         >
+//         {me ? (
+//           <div className="topbar-me" title={`${me.username} · ${me.role}`}>
+//             <span className="me-name">{displayName}</span>
+//             <span className="me-pill">{prettyDepartment(me.department)}</span>
+//           </div>
+//         ) : null}
+
+//         <button onClick={onLogout} className="logout-btn">
 //           Logout
 //         </button>
 //       </div>
@@ -112,36 +270,3 @@ export default function TopBar() {
 //   );
 // }
 
-// // import { Link, useLocation } from "react-router-dom";
-
-// // export default function TopBar() {
-// // const loc = useLocation();
-// // const segments = loc.pathname.split("/").filter(Boolean);
-
-
-// // const breadcrumb = (
-// // <nav className="breadcrumb">
-// // <Link to="/">Home</Link>
-// // {segments.map((seg, idx) => {
-// // const to = "/" + segments.slice(0, idx + 1).join("/");
-// // return (
-// // <span key={to}>
-// // <span className="sep">›</span>
-// // <Link to={to}>{seg}</Link>
-// // </span>
-// // );
-// // })}
-// // </nav>
-// // );
-
-
-// // return (
-// // <header className="topbar">
-// // <div className="brand">
-// // <Link to="/" className="logo">VERADI CONTENTS ERP</Link>
-// // </div>
-// // <div className="grow" />
-// // {breadcrumb}
-// // </header>
-// // );
-// // }

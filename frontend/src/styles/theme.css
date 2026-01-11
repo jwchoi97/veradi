@@ -41,3 +41,4 @@ padding: 0 16px; background: var(--surface); border-bottom: 1px solid var(--line
 .btn.primary { background: var(--brand); color: white; border-color: var(--brand); }
 .input { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; width: 100%; }
 .grid { display: grid; gap: 12px; }
+

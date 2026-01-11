@@ -1,0 +1,31 @@
+/* FILE: frontend/src/layout/TopBar.css */
+
+.topbar-me {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid #e5e7eb; /* gray-200 */
+  border-radius: 999px;
+  background: #f9fafb; /* gray-50 */
+  margin-right: 10px;
+  white-space: nowrap;
+}
+
+.me-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #111827; /* gray-900 */
+  line-height: 1;
+}
+
+.me-pill {
+  font-size: 11px;
+  font-weight: 800;
+  color: #1d4ed8; /* blue-700 */
+  background: #eff6ff; /* blue-50 */
+  border: 1px solid #bfdbfe; /* blue-200 */
+  padding: 4px 8px;
+  border-radius: 999px;
+  line-height: 1;
+}

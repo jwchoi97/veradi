@@ -1,5 +1,6 @@
+// frontend/src/pages/MockUploadPage.tsx
 import React, { useMemo, useState, useEffect } from "react";
-import { Upload, Download, Trash2 } from "lucide-react";
+import { Upload, Download, Trash2, Loader2 } from "lucide-react";
 import { getFileDownloadUrl } from "../data/files/api";
 import {
   fetchProjects,
@@ -10,6 +11,9 @@ import {
   deleteProjectFile,
 } from "../data/files/api";
 
+import ProjectListTable from "@/components/projects/ProjectListTable";
+import UploadDropzone from "@/components/files/UploadDropzone";
+
 /* ---------- helpers ---------- */
 function getFileExt(filename?: string | null) {
   if (!filename) return "";
@@ -18,35 +22,225 @@ function getFileExt(filename?: string | null) {
   return filename.slice(idx + 1).toUpperCase();
 }
 
+function uniqByNameSize(files: File[]) {
+  const map = new Map<string, File>();
+  for (const f of files) map.set(`${f.name}__${f.size}`, f);
+  return Array.from(map.values());
+}
+
+type SlotState = {
+  existing: FileAsset | null; // already uploaded on server
+  queued: File | null; // newly selected in modal
+};
+
+type SlotPairState = { pdf: SlotState; hwp: SlotState };
+
+function isRestrictedType(t: string) {
+  return t !== "기타";
+}
+
+function extLowerFromName(name: string) {
+  const i = name.lastIndexOf(".");
+  if (i < 0) return "";
+  return name.slice(i + 1).toLowerCase();
+}
+
+function pickLatestByExt(files: FileAsset[], ext: "pdf" | "hwp"): FileAsset | null {
+  const filtered = files.filter((f) => extLowerFromName(f.original_name ?? "") === ext);
+  if (filtered.length === 0) return null;
+  filtered.sort((a, b) => {
+    const at = a.created_at ?? "";
+    const bt = b.created_at ?? "";
+    if (at !== bt) return at < bt ? 1 : -1;
+    return a.id < b.id ? 1 : -1;
+  });
+  return filtered[0];
+}
+
+function getBaseUrl(): string {
+  const baseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
+  if (!baseUrl) throw new Error("VITE_API_BASE_URL is not set");
+  return baseUrl.replace(/\/+$/, "");
+}
+
+function formatZipNameByDate(): string {
+  const yyyyMmDd = new Date().toISOString().slice(0, 10);
+  return `files_${yyyyMmDd}.zip`;
+}
+
+async function downloadBlobAsFile(blob: Blob, filename: string) {
+  const url = window.URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    window.URL.revokeObjectURL(url);
+  }
+}
+
 /* ---------- main page ---------- */
 export default function MockUploadPage() {
-  const years = useMemo(() => ["전체", "2024", "2025", "2026"], []);
+  const years = useMemo(() => ["전체", "2025", "2026", "2027"], []);
   const subjects = useMemo(() => ["전체", "물리", "화학", "지구과학"], []);
   const viewOptions = useMemo(() => ["진행중인 프로젝트만", "모두 보기"], []);
   const fileTypeOptions = useMemo(() => ["문제지", "해설지", "정오표", "기타"], []);
-
-  const [year, setYear] = useState("전체");
-  const [subject, setSubject] = useState("전체");
-  const [viewOption, setViewOption] = useState(viewOptions[0]);
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [listLoading, setListLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Allow multiple expanded projects
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<number>>(() => new Set());
 
-  // Files per project
   const [projectFilesMap, setProjectFilesMap] = useState<Record<number, FileAsset[]>>({});
   const [filesLoadingMap, setFilesLoadingMap] = useState<Record<number, boolean>>({});
 
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [modalProject, setModalProject] = useState<Project | null>(null);
-  const [modalFile, setModalFile] = useState<File | null>(null);
-  const [modalFileType, setModalFileType] = useState<string>(fileTypeOptions[0]);
-  const [uploadLoading, setUploadLoading] = useState(false);
+
+  const [queuedSlotsByType, setQueuedSlotsByType] = useState<Record<string, SlotPairState>>({});
+  const [queuedMiscFiles, setQueuedMiscFiles] = useState<File[]>([]);
+  const [batchUploading, setBatchUploading] = useState(false);
+
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+
+  // ✅ selection for global bulk actions (across projects)
+  const [selectedFileIdsByProject, setSelectedFileIdsByProject] = useState<Record<number, Set<number>>>({});
+
+  // ✅ bulk action loading states
+  const [isBulkDownloading, setIsBulkDownloading] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+
+  const getSelectedSet = (projectId: number) => selectedFileIdsByProject[projectId] ?? new Set<number>();
+
+  const setSelectedSet = (projectId: number, next: Set<number>) => {
+    setSelectedFileIdsByProject((prev) => ({ ...prev, [projectId]: next }));
+  };
+
+  const toggleSelected = (projectId: number, fileId: number) => {
+    const next = new Set(getSelectedSet(projectId));
+    if (next.has(fileId)) next.delete(fileId);
+    else next.add(fileId);
+    setSelectedSet(projectId, next);
+  };
+
+  const pruneSelection = (projectId: number, files: FileAsset[]) => {
+    setSelectedFileIdsByProject((prev) => {
+      const cur = prev[projectId];
+      if (!cur || cur.size === 0) return prev;
+
+      const alive = new Set(files.map((f) => f.id));
+      const next = new Set<number>();
+      cur.forEach((id) => {
+        if (alive.has(id)) next.add(id);
+      });
+
+      return { ...prev, [projectId]: next };
+    });
+  };
+
+  const clearAllSelection = () => {
+    setSelectedFileIdsByProject({});
+  };
+
+  const getAllSelectedPairs = useMemo(() => {
+    const pairs: Array<{ projectId: number; file: FileAsset }> = [];
+    for (const [pidStr, sel] of Object.entries(selectedFileIdsByProject)) {
+      const projectId = Number(pidStr);
+      if (!sel || sel.size === 0) continue;
+      const files = projectFilesMap[projectId] ?? [];
+      for (const f of files) {
+        if (sel.has(f.id)) pairs.push({ projectId, file: f });
+      }
+    }
+    return pairs;
+  }, [projectFilesMap, selectedFileIdsByProject]);
+
+  const globalSelectedCount = getAllSelectedPairs.length;
+  const bulkBusy = isBulkDownloading || isBulkDeleting;
+
+  const bulkDownloadZipGlobal = async () => {
+    if (globalSelectedCount === 0) return;
+    if (bulkBusy) return;
+
+    const fileIds = getAllSelectedPairs.map((x) => x.file.id);
+
+    setIsBulkDownloading(true);
+    try {
+      const res = await fetch(`${getBaseUrl()}/projects/files/bulk-download`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_ids: fileIds }),
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        throw new Error(`bulk-download failed: ${res.status}`);
+      }
+
+      const blob = await res.blob();
+      await downloadBlobAsFile(blob, formatZipNameByDate());
+    } catch (e) {
+      console.error(e);
+
+      // fallback (temporary): per-file download url
+      try {
+        for (const x of getAllSelectedPairs) {
+          const { url } = await getFileDownloadUrl(x.projectId, x.file.id);
+          window.open(url, "_blank");
+        }
+      } catch (e2) {
+        console.error(e2);
+        alert("다운로드에 실패했습니다.");
+      }
+    } finally {
+      setIsBulkDownloading(false);
+    }
+  };
+
+  const bulkDeleteGlobal = async () => {
+    if (globalSelectedCount === 0) return;
+    if (bulkBusy) return;
+
+    if (!window.confirm(`선택한 파일 ${globalSelectedCount}개를 삭제하시겠습니까?`)) return;
+
+    setIsBulkDeleting(true);
+    try {
+      await Promise.all(getAllSelectedPairs.map((x) => deleteProjectFile(x.projectId, x.file.id)));
+
+      // reload expanded projects (so UI stays consistent)
+      const expanded = Array.from(expandedProjectIds);
+      await Promise.all(expanded.map((pid) => loadProjectFiles(pid)));
+
+      clearAllSelection();
+    } catch (e) {
+      console.error(e);
+      alert("파일 삭제에 실패했습니다.");
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
+
+  /* ---------- global drag/drop prevent (drop outside => browser open) ---------- */
+  useEffect(() => {
+    if (!isUploadModalOpen) return;
+
+    const prevent = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
+  }, [isUploadModalOpen]);
 
   /* ---------- data load ---------- */
   const loadProjects = async () => {
@@ -67,8 +261,12 @@ export default function MockUploadPage() {
       setFilesLoadingMap((prev) => ({ ...prev, [projectId]: true }));
       const files = await getProjectFiles(projectId);
       setProjectFilesMap((prev) => ({ ...prev, [projectId]: files }));
+      pruneSelection(projectId, files);
+      return files;
     } catch {
       setProjectFilesMap((prev) => ({ ...prev, [projectId]: [] }));
+      setSelectedFileIdsByProject((prev) => ({ ...prev, [projectId]: new Set<number>() }));
+      return [] as FileAsset[];
     } finally {
       setFilesLoadingMap((prev) => ({ ...prev, [projectId]: false }));
     }
@@ -77,14 +275,6 @@ export default function MockUploadPage() {
   useEffect(() => {
     void loadProjects();
   }, []);
-
-  const filteredProjects = useMemo(() => {
-    return projects.filter((p) => {
-      if (year !== "전체" && p.year !== year) return false;
-      if (subject !== "전체" && p.subject !== subject) return false;
-      return true;
-    });
-  }, [projects, year, subject]);
 
   const handleToggleExpand = (p: Project) => {
     setExpandedProjectIds((prev) => {
@@ -97,264 +287,554 @@ export default function MockUploadPage() {
 
       next.add(p.id);
 
-      // Load files when opening (or refresh if not loaded yet)
       const alreadyLoaded = Object.prototype.hasOwnProperty.call(projectFilesMap, p.id);
-      if (!alreadyLoaded) {
-        void loadProjectFiles(p.id);
-      }
+      if (!alreadyLoaded) void loadProjectFiles(p.id);
 
       return next;
     });
   };
 
-  const openUploadModal = (p: Project) => {
-    setModalProject(p);
-    setModalFile(null);
-    setModalFileType(fileTypeOptions[0]);
+  const reject = (msg: string) => {
+    setUploadSuccess(null);
+    setUploadError(msg);
+  };
+
+  const clearMsg = () => {
     setUploadError(null);
     setUploadSuccess(null);
+  };
+
+  const openUploadModal = async (p: Project) => {
+    setModalProject(p);
+    clearMsg();
+
+    const files = await loadProjectFiles(p.id);
+
+    const initSlots: Record<string, SlotPairState> = {};
+    for (const t of fileTypeOptions) {
+      if (!isRestrictedType(t)) continue;
+      const filesForType = files.filter((f) => (f.file_type ?? "").trim() === t);
+      initSlots[t] = {
+        pdf: { existing: pickLatestByExt(filesForType, "pdf"), queued: null },
+        hwp: { existing: pickLatestByExt(filesForType, "hwp"), queued: null },
+      };
+    }
+
+    setQueuedSlotsByType(initSlots);
+    setQueuedMiscFiles([]);
     setIsUploadModalOpen(true);
   };
 
   const closeUploadModal = () => {
+    if (batchUploading) return;
     setIsUploadModalOpen(false);
     setModalProject(null);
-    setModalFile(null);
-    setUploadError(null);
-    setUploadSuccess(null);
+    setQueuedSlotsByType({});
+    setQueuedMiscFiles([]);
+    clearMsg();
   };
 
-  const handleModalFileChange: React.ChangeEventHandler<HTMLInputElement> = (e) => {
-    setModalFile(e.target.files?.[0] ?? null);
-    setUploadError(null);
-    setUploadSuccess(null);
+  /* ---------- slot ops ---------- */
+  const setQueuedSlotFile = (t: string, kind: "pdf" | "hwp", file: File) => {
+    clearMsg();
+    setQueuedSlotsByType((prev) => {
+      const cur = prev[t];
+      if (!cur) return prev;
+
+      if (cur[kind].existing) {
+        reject(`이미 업로드된 ${t} ${kind.toUpperCase()} 파일이 있습니다. 삭제 후 업로드하세요.`);
+        return prev;
+      }
+      if (cur[kind].queued) {
+        reject(`${t} ${kind.toUpperCase()} 슬롯은 이미 선택되어 있습니다. 먼저 제거 후 다시 넣어주세요.`);
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [t]: { ...cur, [kind]: { ...cur[kind], queued: file } },
+      };
+    });
   };
 
-  const handleUpload = async () => {
-    if (!modalProject || !modalFile) {
-      setUploadError("파일을 선택하세요.");
+  const removeQueuedSlotFile = (t: string, kind: "pdf" | "hwp") => {
+    setQueuedSlotsByType((prev) => {
+      const cur = prev[t];
+      if (!cur) return prev;
+      return { ...prev, [t]: { ...cur, [kind]: { ...cur[kind], queued: null } } };
+    });
+  };
+
+  const deleteExistingSlotFile = async (t: string, kind: "pdf" | "hwp") => {
+    if (!modalProject) return;
+    const cur = queuedSlotsByType[t];
+    const existing = cur?.[kind].existing;
+    if (!existing) return;
+
+    if (!window.confirm("정말로 이 파일을 삭제하시겠습니까?")) return;
+
+    clearMsg();
+    try {
+      await deleteProjectFile(modalProject.id, existing.id);
+
+      const files = await loadProjectFiles(modalProject.id);
+      const filesForType = files.filter((f) => (f.file_type ?? "").trim() === t);
+
+      setQueuedSlotsByType((prev) => {
+        const c = prev[t];
+        if (!c) return prev;
+        return {
+          ...prev,
+          [t]: {
+            pdf: { existing: pickLatestByExt(filesForType, "pdf"), queued: c.pdf.queued },
+            hwp: { existing: pickLatestByExt(filesForType, "hwp"), queued: c.hwp.queued },
+          },
+        };
+      });
+
+      setUploadSuccess("삭제 완료");
+    } catch {
+      reject("파일 삭제에 실패했습니다.");
+    }
+  };
+
+  /* ---------- misc ops ---------- */
+  const addMiscFiles = (files: File[]) => {
+    clearMsg();
+    setQueuedMiscFiles((prev) => uniqByNameSize([...prev, ...files]));
+  };
+
+  const removeMiscFile = (idx: number) => {
+    setQueuedMiscFiles((prev) => prev.slice(0, idx).concat(prev.slice(idx + 1)));
+  };
+
+  const totalQueuedCount = useMemo(() => {
+    let n = queuedMiscFiles.length;
+    for (const t of fileTypeOptions) {
+      if (!isRestrictedType(t)) continue;
+      const s = queuedSlotsByType[t];
+      if (s?.pdf.queued) n += 1;
+      if (s?.hwp.queued) n += 1;
+    }
+    return n;
+  }, [fileTypeOptions, queuedMiscFiles, queuedSlotsByType]);
+
+  /* ---------- batch upload ---------- */
+  const handleBatchUpload = async () => {
+    if (!modalProject) return;
+
+    if (totalQueuedCount === 0) {
+      reject("업로드할 파일을 추가하세요.");
       return;
     }
 
+    clearMsg();
+    setBatchUploading(true);
+
     try {
-      setUploadLoading(true);
-      await uploadProjectFile(modalProject.id, modalFile, modalFileType);
+      for (const t of fileTypeOptions) {
+        if (!isRestrictedType(t)) continue;
+        const s = queuedSlotsByType[t];
+        if (!s) continue;
+
+        if (s.pdf.queued) await uploadProjectFile(modalProject.id, s.pdf.queued, t);
+        if (s.hwp.queued) await uploadProjectFile(modalProject.id, s.hwp.queued, t);
+      }
+
+      for (const f of queuedMiscFiles) {
+        await uploadProjectFile(modalProject.id, f, "기타");
+      }
+
       setUploadSuccess("업로드 성공!");
-      setModalFile(null);
+
+      const files = await loadProjectFiles(modalProject.id);
+
+      const nextSlots: Record<string, SlotPairState> = {};
+      for (const t of fileTypeOptions) {
+        if (!isRestrictedType(t)) continue;
+        const filesForType = files.filter((f) => (f.file_type ?? "").trim() === t);
+        nextSlots[t] = {
+          pdf: { existing: pickLatestByExt(filesForType, "pdf"), queued: null },
+          hwp: { existing: pickLatestByExt(filesForType, "hwp"), queued: null },
+        };
+      }
+
+      setQueuedSlotsByType(nextSlots);
+      setQueuedMiscFiles([]);
 
       if (expandedProjectIds.has(modalProject.id)) {
         await loadProjectFiles(modalProject.id);
       }
     } catch {
-      setUploadError("업로드 실패");
+      reject("업로드 실패");
     } finally {
-      setUploadLoading(false);
+      setBatchUploading(false);
     }
   };
 
-  const handleDeleteFile = async (file: FileAsset) => {
-    const projectId = file.project_id;
-    if (!window.confirm("정말로 이 파일을 삭제하시겠습니까?")) return;
+  /* ---------- file table (expanded) ---------- */
+  const renderExpandedRow = (p: Project) => {
+    const filesLoading = !!filesLoadingMap[p.id];
+    const projectFiles = projectFilesMap[p.id] ?? [];
 
-    try {
-      await deleteProjectFile(projectId, file.id);
-      await loadProjectFiles(projectId);
-    } catch (e) {
-      console.error(e);
-      alert("파일 삭제에 실패했습니다.");
+    const grouped = new Map<string, FileAsset[]>();
+    for (const t of fileTypeOptions) grouped.set(t, []);
+
+    const unknown: FileAsset[] = [];
+    for (const f of projectFiles) {
+      const t = (f.file_type ?? "").trim();
+      if (t && grouped.has(t)) grouped.get(t)!.push(f);
+      else unknown.push(f);
     }
+
+    for (const t of fileTypeOptions) grouped.get(t)!.sort((a, b) => (a.id < b.id ? 1 : -1));
+    unknown.sort((a, b) => (a.id < b.id ? 1 : -1));
+
+    const orderedTypes = unknown.length > 0 ? [...fileTypeOptions, "__UNKNOWN__"] : [...fileTypeOptions];
+
+    if (filesLoading) return <div className="text-gray-500 text-xs">불러오는 중...</div>;
+
+    return (
+      <table className="min-w-full text-xs border">
+        <thead className="bg-gray-100">
+          <tr>
+            <th className="px-3 py-2 text-left w-28">파일 타입</th>
+            <th className="px-3 py-2 text-left">파일명</th>
+            <th className="px-3 py-2 text-left w-20">확장자</th>
+            <th className="px-3 py-2 text-left w-28">업로드일</th>
+            <th className="px-3 py-2 text-right w-36 whitespace-nowrap">선택</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {orderedTypes.flatMap((t) => {
+            const isUnknown = t === "__UNKNOWN__";
+            const filesForType = isUnknown ? unknown : grouped.get(t) ?? [];
+            const rows: Array<FileAsset | null> = !isUnknown && filesForType.length === 0 ? [null] : filesForType;
+
+            return rows.map((f, idx) => {
+              const isPlaceholder = f == null;
+
+              const shouldRenderTypeCell = !isUnknown && idx === 0;
+              const typeRowSpan = !isUnknown ? rows.length : 1;
+
+              const trBorderClass = idx === 0 ? "border-t" : "";
+              const cellTight = "px-3 py-0.5 leading-none";
+
+              return (
+                <tr key={`${p.id}-${t}-${f?.id ?? "empty"}-${idx}`} className={trBorderClass}>
+                  {shouldRenderTypeCell ? (
+                    <td
+                      rowSpan={typeRowSpan}
+                      className={[
+                        "pl-4 pr-3 py-0.5 leading-none",
+                        "w-28",
+                        "align-middle",
+                        "text-left",
+                        "font-semibold",
+                        "text-gray-900",
+                        "bg-gray-50",
+                      ].join(" ")}
+                    >
+                      {t}
+                    </td>
+                  ) : null}
+
+                  {isUnknown ? <td className={`${cellTight} w-28`} /> : null}
+
+                  <td className={cellTight}>
+                    {isPlaceholder ? <span className="text-gray-300"> </span> : f.original_name}
+                  </td>
+
+                  <td className={`${cellTight} text-gray-700 w-20`}>
+                    {isPlaceholder ? "" : getFileExt(f.original_name)}
+                  </td>
+
+                  <td className={`${cellTight} w-28`}>{isPlaceholder ? "" : f.created_at?.split("T")[0] ?? ""}</td>
+
+                  <td className={`${cellTight} text-right w-36 pr-4`}>
+                    {isPlaceholder ? (
+                      <span className="text-gray-300"> </span>
+                    ) : (
+                      <div className="inline-flex items-center justify-end gap-2">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded-md border-gray-300"
+                          checked={getSelectedSet(p.id).has(f.id)}
+                          onChange={() => toggleSelected(p.id, f.id)}
+                          title="선택"
+                        />
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            });
+          })}
+        </tbody>
+      </table>
+    );
   };
 
-  /* ---------- UI ---------- */
   return (
     <div className="w-full min-h-[calc(100vh-64px)] px-4 md:px-6 py-4 text-gray-900 space-y-4">
-      {/* Filter section */}
-      <section className="rounded-2xl border bg-white p-4 shadow-sm">
-        <div className="flex flex-wrap items-end gap-4">
-          <LabeledSelect label="학년도 선택" value={year} onChange={setYear} options={years} />
-          <LabeledSelect label="과목 선택" value={subject} onChange={setSubject} options={subjects} />
-          <LabeledSelect label="보기 옵션" value={viewOption} onChange={setViewOption} options={viewOptions} />
+      <div className="flex items-start justify-between gap-3">
+        <h1 className="text-2xl font-bold tracking-tight">모의고사 업로드</h1>
+
+        {/* ✅ Global bulk actions (outside table) */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            onClick={() => void bulkDeleteGlobal()}
+            disabled={globalSelectedCount === 0 || bulkBusy}
+            title={
+              globalSelectedCount
+                ? bulkBusy
+                  ? "처리 중..."
+                  : `선택 ${globalSelectedCount}개 삭제`
+                : "선택된 파일이 없습니다"
+            }
+          >
+            {isBulkDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+            {isBulkDeleting ? `삭제 중... (${globalSelectedCount})` : `삭제 (${globalSelectedCount})`}
+          </button>
+
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
+            onClick={() => void bulkDownloadZipGlobal()}
+            disabled={globalSelectedCount === 0 || bulkBusy}
+            title={
+              globalSelectedCount
+                ? bulkBusy
+                  ? "처리 중..."
+                  : `선택 ${globalSelectedCount}개 ZIP 다운로드`
+                : "선택된 파일이 없습니다"
+            }
+          >
+            {isBulkDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {isBulkDownloading ? `다운로드 중... (${globalSelectedCount})` : `다운로드 (${globalSelectedCount})`}
+          </button>
         </div>
-      </section>
+      </div>
 
-      {/* Project list */}
-      <section className="rounded-2xl border bg-white p-4 shadow-sm">
-        <h2 className="text-lg font-semibold mb-3">프로젝트 목록</h2>
+      {listLoading && <div className="text-gray-500 text-sm">프로젝트 목록을 불러오는 중입니다...</div>}
+      {error && <div className="text-red-500 text-sm">{error}</div>}
 
-        {listLoading && <div className="text-gray-500 text-sm mb-2">프로젝트 목록을 불러오는 중입니다...</div>}
-        {error && <div className="text-red-500 text-sm mb-2">{error}</div>}
+      <ProjectListTable
+        title="프로젝트 목록"
+        projects={projects}
+        years={years}
+        subjects={subjects}
+        viewOptions={viewOptions as any}
+        actionHeader="업로드"
+        renderAction={(p) => <UploadButton onClick={() => void openUploadModal(p)} />}
+        leadingHeader=""
+        renderLeadingCell={(p) => <span className="select-none">{expandedProjectIds.has(p.id) ? "▾" : "▸"}</span>}
+        isExpanded={(p) => expandedProjectIds.has(p.id)}
+        onToggleExpand={handleToggleExpand}
+        renderExpandedRow={renderExpandedRow}
+        pageSize={10}
+      />
 
-        {filteredProjects.length === 0 && !listLoading ? (
-          <div className="text-gray-500 text-sm text-center py-10">프로젝트가 없습니다.</div>
-        ) : (
-          <table className="w-full text-sm border-t">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="w-8" />
-                <th className="text-left px-3 py-2">프로젝트명</th>
-                <th className="text-left px-3 py-2">과목</th>
-                <th className="text-left px-3 py-2">학년도</th>
-                <th className="text-left px-3 py-2">마감일</th>
-                <th className="text-left px-3 py-2">업로드</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {filteredProjects.map((p) => {
-                const isOpen = expandedProjectIds.has(p.id);
-                const filesLoading = !!filesLoadingMap[p.id];
-                const projectFiles = projectFilesMap[p.id] ?? [];
-
-                // Group files by file type; keep placeholders even if empty
-                const grouped = new Map<string, FileAsset[]>();
-                for (const t of fileTypeOptions) grouped.set(t, []);
-
-                const unknown: FileAsset[] = [];
-                for (const f of projectFiles) {
-                  const t = (f.file_type ?? "").trim();
-                  if (t && grouped.has(t)) grouped.get(t)!.push(f);
-                  else unknown.push(f);
-                }
-
-                for (const t of fileTypeOptions) {
-                  grouped.get(t)!.sort((a, b) => (a.id < b.id ? 1 : -1));
-                }
-                unknown.sort((a, b) => (a.id < b.id ? 1 : -1));
-
-                // Show unknown group at bottom with blank type label, only if exists
-                const orderedTypes = unknown.length > 0 ? [...fileTypeOptions, "__UNKNOWN__"] : [...fileTypeOptions];
-
-                return (
-                  <React.Fragment key={p.id}>
-                    <tr className="border-t hover:bg-gray-50">
-                      <td className="px-2">
-                        <button onClick={() => handleToggleExpand(p)}>{isOpen ? "▾" : "▸"}</button>
-                      </td>
-                      <td className="px-3 py-2">{p.name}</td>
-                      <td className="px-3 py-2">{p.subject}</td>
-                      <td className="px-3 py-2">{p.year}</td>
-                      <td className="px-3 py-2">{p.deadline?.split("T")[0]}</td>
-                      <td className="px-3 py-2">
-                        <UploadButton onClick={() => openUploadModal(p)} />
-                      </td>
-                    </tr>
-
-                    {isOpen && (
-                      <tr className="bg-gray-50">
-                        <td colSpan={6} className="px-3 py-3">
-                          {filesLoading ? (
-                            <div className="text-gray-500 text-xs">불러오는 중...</div>
-                          ) : (
-                            <table className="min-w-full text-xs border">
-                              <thead className="bg-gray-100">
-                                <tr>
-                                  <th className="px-3 py-2 text-left w-28">파일 타입</th>
-                                  <th className="px-3 py-2 text-left">파일명</th>
-                                  <th className="px-3 py-2 text-left w-20">확장자</th>
-                                  <th className="px-3 py-2 text-left w-28">업로드일</th>
-                                  <th className="px-3 py-2 text-right w-24">작업</th>
-                                </tr>
-                              </thead>
-
-                              <tbody>
-                                {orderedTypes.flatMap((t) => {
-                                  const isUnknown = t === "__UNKNOWN__";
-                                  const filesForType = isUnknown ? unknown : grouped.get(t) ?? [];
-
-                                  // Keep at least 1 row even if empty for known types
-                                  const rows: Array<FileAsset | null> =
-                                    !isUnknown && filesForType.length === 0 ? [null] : filesForType;
-
-                                  return rows.map((f, idx) => {
-                                    const isPlaceholder = f == null;
-                                    const typeCell = idx === 0 ? (isUnknown ? "" : t) : "";
-
-                                    return (
-                                      <tr key={`${p.id}-${t}-${f?.id ?? "empty"}-${idx}`} className="border-t">
-                                        <td className="px-3 py-2 font-medium text-gray-800">{typeCell}</td>
-
-                                        <td className="px-3 py-2">
-                                          {isPlaceholder ? <span className="text-gray-300"> </span> : f.original_name}
-                                        </td>
-
-                                        <td className="px-3 py-2 text-gray-700">
-                                          {isPlaceholder ? "" : getFileExt(f.original_name)}
-                                        </td>
-
-                                        <td className="px-3 py-2">
-                                          {isPlaceholder ? "" : f.created_at?.split("T")[0] ?? ""}
-                                        </td>
-
-                                        <td className="px-3 py-2 text-right">
-                                          {isPlaceholder ? (
-                                            <span className="text-gray-300"> </span>
-                                          ) : (
-                                            <div className="inline-flex gap-1">
-                                              <DownloadButton projectId={f.project_id} fileId={f.id} />
-                                              <DeleteButton onClick={() => handleDeleteFile(f)} />
-                                            </div>
-                                          )}
-                                        </td>
-                                      </tr>
-                                    );
-                                  });
-                                })}
-                              </tbody>
-                            </table>
-                          )}
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </section>
-
-      {/* upload modal */}
+      {/* ---- 이하 업로드 모달은 너가 준 원본 그대로 (생략 없이 유지) ---- */}
       {isUploadModalOpen && modalProject && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6">
-            <h2 className="text-lg font-semibold mb-4">파일 업로드</h2>
-
-            <div className="mb-3 text-sm">
-              {modalProject.year} / {modalProject.subject} / {modalProject.name}
+          <div className="w-full max-w-3xl rounded-2xl bg-white p-6">
+            <div>
+              <h2 className="text-lg font-semibold">파일 업로드</h2>
+              <div className="mt-1 text-sm text-gray-600">
+                {modalProject.year} / {modalProject.subject} / {modalProject.name}
+              </div>
+              <div className="mt-1 text-xs text-gray-500">
+                문제지/해설지/정오표는 PDF/HWP 각각 1개만 업로드 가능(단독 업로드 가능). 기타는 제한 없음.
+              </div>
             </div>
 
-            <select
-              className="w-full h-9 border rounded-md px-2 text-sm mb-3"
-              value={modalFileType}
-              onChange={(e) => setModalFileType(e.target.value)}
-            >
-              {fileTypeOptions.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
+            <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
+              {fileTypeOptions.map((t) => {
+                if (t === "기타") {
+                  return (
+                    <div key={t} className="rounded-2xl border p-4">
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="text-sm font-semibold text-gray-900">기타</div>
+                        <div className="text-xs text-gray-500">{queuedMiscFiles.length}개</div>
+                      </div>
 
-            <input type="file" onChange={handleModalFileChange} />
+                      <UploadDropzone
+                        compact
+                        accept=""
+                        multiple
+                        disabled={batchUploading}
+                        showLastAdded={false}
+                        showHintText={false}
+                        onReject={(m) => reject(m)}
+                        onFiles={(files) => addMiscFiles(files)}
+                      />
 
-            {uploadError && <div className="text-red-500 text-xs mt-2">{uploadError}</div>}
-            {uploadSuccess && <div className="text-green-600 text-xs mt-2">{uploadSuccess}</div>}
+                      {queuedMiscFiles.length > 0 && (
+                        <div className="mt-3 space-y-1">
+                          {queuedMiscFiles.map((f, idx) => (
+                            <div
+                              key={`${f.name}-${f.size}-${idx}`}
+                              className="flex items-center justify-between rounded-md border px-2 py-1"
+                            >
+                              <div className="min-w-0">
+                                <div className="truncate text-xs text-gray-800">{f.name}</div>
+                                <div className="text-[11px] text-gray-500">
+                                  {getFileExt(f.name)} • {f.size.toLocaleString()} bytes
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                className="ml-2 p-1 text-gray-500 hover:text-red-600 disabled:opacity-50"
+                                onClick={() => removeMiscFile(idx)}
+                                disabled={batchUploading}
+                                title="Remove"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
 
-            <div className="flex justify-end gap-2 mt-4">
+                const slots = queuedSlotsByType[t];
+
+                return (
+                  <div key={t} className="rounded-2xl border p-4">
+                    <div className="mb-2 flex items-center justify-between">
+                      <div className="text-sm font-semibold text-gray-900">{t}</div>
+                      <div className="text-xs text-gray-500">PDF / HWP</div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3">
+                      {/* PDF slot */}
+                      <div className="rounded-xl border p-3">
+                        <div className="mb-2 flex items-center justify-between">
+                          <div className="text-xs font-semibold text-gray-700">PDF</div>
+                          {slots?.pdf.existing ? (
+                            <button
+                              type="button"
+                              className="text-xs text-gray-500 hover:text-red-600 disabled:opacity-50"
+                              onClick={() => void deleteExistingSlotFile(t, "pdf")}
+                              disabled={batchUploading}
+                            >
+                              삭제
+                            </button>
+                          ) : slots?.pdf.queued ? (
+                            <button
+                              type="button"
+                              className="text-xs text-gray-500 hover:text-red-600 disabled:opacity-50"
+                              onClick={() => removeQueuedSlotFile(t, "pdf")}
+                              disabled={batchUploading}
+                            >
+                              제거
+                            </button>
+                          ) : null}
+                        </div>
+
+                        {slots?.pdf.existing ? (
+                          <div className="rounded-md border px-2 py-1">
+                            <div className="truncate text-xs text-gray-800">{slots.pdf.existing.original_name}</div>
+                            <div className="text-[11px] text-gray-500">이미 업로드됨</div>
+                          </div>
+                        ) : slots?.pdf.queued ? (
+                          <div className="rounded-md border px-2 py-1">
+                            <div className="truncate text-xs text-gray-800">{slots.pdf.queued.name}</div>
+                            <div className="text-[11px] text-gray-500">업로드 대기</div>
+                          </div>
+                        ) : (
+                          <UploadDropzone
+                            compact
+                            accept=".pdf"
+                            multiple={false}
+                            disabled={batchUploading}
+                            showLastAdded={false}
+                            showHintText={false}
+                            onReject={(m) => reject(m)}
+                            onFiles={(files) => setQueuedSlotFile(t, "pdf", files[0])}
+                          />
+                        )}
+                      </div>
+
+                      {/* HWP slot */}
+                      <div className="rounded-xl border p-3">
+                        <div className="mb-2 flex items-center justify-between">
+                          <div className="text-xs font-semibold text-gray-700">HWP</div>
+                          {slots?.hwp.existing ? (
+                            <button
+                              type="button"
+                              className="text-xs text-gray-500 hover:text-red-600 disabled:opacity-50"
+                              onClick={() => void deleteExistingSlotFile(t, "hwp")}
+                              disabled={batchUploading}
+                            >
+                              삭제
+                            </button>
+                          ) : slots?.hwp.queued ? (
+                            <button
+                              type="button"
+                              className="text-xs text-gray-500 hover:text-red-600 disabled:opacity-50"
+                              onClick={() => removeQueuedSlotFile(t, "hwp")}
+                              disabled={batchUploading}
+                            >
+                              제거
+                            </button>
+                          ) : null}
+                        </div>
+
+                        {slots?.hwp.existing ? (
+                          <div className="rounded-md border px-2 py-1">
+                            <div className="truncate text-xs text-gray-800">{slots.hwp.existing.original_name}</div>
+                            <div className="text-[11px] text-gray-500">이미 업로드됨</div>
+                          </div>
+                        ) : slots?.hwp.queued ? (
+                          <div className="rounded-md border px-2 py-1">
+                            <div className="truncate text-xs text-gray-800">{slots.hwp.queued.name}</div>
+                            <div className="text-[11px] text-gray-500">업로드 대기</div>
+                          </div>
+                        ) : (
+                          <UploadDropzone
+                            compact
+                            accept=".hwp"
+                            multiple={false}
+                            disabled={batchUploading}
+                            showLastAdded={false}
+                            showHintText={false}
+                            onReject={(m) => reject(m)}
+                            onFiles={(files) => setQueuedSlotFile(t, "hwp", files[0])}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {uploadError && <div className="mt-3 whitespace-pre-line text-red-500 text-xs">{uploadError}</div>}
+            {uploadSuccess && <div className="text-green-600 text-xs mt-3">{uploadSuccess}</div>}
+
+            <div className="mt-5 flex items-center justify-end gap-2">
               <button
                 type="button"
-                className="px-3 py-2 text-sm rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50"
+                className="px-4 py-2 text-sm rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                 onClick={closeUploadModal}
+                disabled={batchUploading}
               >
-                취소
+                닫기
               </button>
               <button
                 type="button"
                 className="px-4 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
-                onClick={handleUpload}
-                disabled={uploadLoading}
+                onClick={handleBatchUpload}
+                disabled={batchUploading || totalQueuedCount === 0}
               >
-                {uploadLoading ? "업로드 중..." : "업로드"}
+                {batchUploading ? "업로드 중..." : `업로드 (${totalQueuedCount})`}
               </button>
             </div>
           </div>
@@ -364,66 +844,11 @@ export default function MockUploadPage() {
   );
 }
 
-function LabeledSelect({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: string[];
-}) {
-  return (
-    <label className="flex flex-col w-48">
-      <span className="text-sm text-gray-600 mb-1">{label}</span>
-      <select
-        className="h-9 border rounded-md px-2 text-sm focus:border-indigo-600"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
 /* ---------- icon buttons ---------- */
 export function UploadButton({ onClick }: { onClick: () => void }) {
   return (
     <button onClick={onClick} className="p-1.5 text-gray-600 hover:text-indigo-600" title="Upload">
       <Upload className="h-4 w-4" />
-    </button>
-  );
-}
-
-export function DeleteButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button onClick={onClick} className="p-1.5 text-gray-500 hover:text-red-600" title="Delete">
-      <Trash2 className="h-4 w-4" />
-    </button>
-  );
-}
-
-function DownloadButton({ projectId, fileId }: { projectId: number; fileId: number }) {
-  const onDownload = async () => {
-    try {
-      const { url } = await getFileDownloadUrl(projectId, fileId);
-      window.open(url, "_blank");
-    } catch (e) {
-      console.error(e);
-      alert("다운로드에 실패했습니다.");
-    }
-  };
-
-  return (
-    <button onClick={onDownload} className="p-1.5 text-gray-600 hover:text-gray-900" title="Download">
-      <Download className="h-4 w-4" />
     </button>
   );
 }
