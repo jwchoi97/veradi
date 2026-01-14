@@ -1,5 +1,3 @@
-// FILE: frontend/src/layout/AppLayout.tsx
-
 import React, { useEffect, useMemo, useState } from "react";
 import { Outlet, NavLink } from "react-router-dom";
 import TopBar from "./TopBar";
@@ -10,17 +8,20 @@ type NavState = { isActive: boolean; isPending: boolean; isTransitioning?: boole
 
 const LS_KEY = "ui.sidebarHidden";
 
+function canSeeAdminModule(role?: string | null): boolean {
+  return role === "ADMIN" || role === "LEAD";
+}
+
 export default function AppLayout() {
   const me = getAuthedUser();
 
   const menuModules = useMemo(() => {
     return ROUTE_MODULES.filter((m) => {
-      if (m.base === "/erp/admin") return me?.role === "ADMIN";
+      if (m.base === "/erp/admin") return canSeeAdminModule(me?.role ?? null);
       return true;
     });
   }, [me?.role]);
 
-  // true = sidebar shown, false = sidebar hidden(0px)
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   useEffect(() => {
@@ -66,6 +67,9 @@ export default function AppLayout() {
 }
 
 
+
+// // FILE: frontend/src/layout/AppLayout.tsx
+
 // import React, { useEffect, useMemo, useState } from "react";
 // import { Outlet, NavLink } from "react-router-dom";
 // import TopBar from "./TopBar";
@@ -99,10 +103,10 @@ export default function AppLayout() {
 
 //   return (
 //     <div className={`app-shell ${sidebarOpen ? "" : "sb-hidden"}`}>
-//       {/* TopBar에서 왼쪽 버튼(× / ≡)으로 토글하려면 props로 내려주기 */}
 //       <TopBar
 //         sidebarOpen={sidebarOpen}
 //         onToggleSidebar={() => setSidebarOpen((v) => !v)}
+//         me={me ?? null}
 //       />
 
 //       <div className="app-body">
@@ -115,9 +119,7 @@ export default function AppLayout() {
 //                 key={m.base}
 //                 to={m.base}
 //                 end
-//                 className={({ isActive }: NavState) =>
-//                   `side-link ${isActive ? "active" : ""}`
-//                 }
+//                 className={({ isActive }: NavState) => `side-link ${isActive ? "active" : ""}`}
 //               >
 //                 {m.label ?? m.base}
 //               </NavLink>

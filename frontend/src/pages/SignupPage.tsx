@@ -2,40 +2,23 @@
 
 import React, { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import type { Department } from "@/data/departments";
+import { DEPARTMENTS, prettyDepartment } from "@/data/departments";
 
-/**
- * IMPORTANT:
- * - UI labels are Korean (물리/화학/...), but the value sent to backend is an enum code string.
- * - Backend Department enum must match these codes.
- */
-
-type DepartmentCode =
-  | "PHYSICS_1"
-  | "CHEMISTRY_1"
-  | "BIOLOGY_1"
-  | "EARTH_1"
-  | "CHEMISTRY_2"
-  | "SOCIOCULTURE"
-  | "MATH";
-
-type SignupPayload = {
+type SignupPayloadCompat = {
   username: string;
   name: string;
-  departments: DepartmentCode[];
+  departments: Department[];
+  department?: Department; // legacy fallback
   phone_number: string;
   password: string;
   password_confirm: string;
 };
 
-const departmentOptions: { value: DepartmentCode; label: string }[] = [
-  { value: "PHYSICS_1", label: "물리1" },
-  { value: "CHEMISTRY_1", label: "화학1" },
-  { value: "BIOLOGY_1", label: "생물1" },
-  { value: "EARTH_1", label: "지구1" },
-  { value: "CHEMISTRY_2", label: "화학2" },
-  { value: "SOCIOCULTURE", label: "사회문화" },
-  { value: "MATH", label: "수학" },
-];
+const departmentOptions: { value: Department; label: string }[] = DEPARTMENTS.map((d) => ({
+  value: d,
+  label: prettyDepartment(d),
+}));
 
 function digitsOnly(v: string): string {
   return v.replace(/[^\d]/g, "");
@@ -45,7 +28,7 @@ function trimOrEmpty(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
-function uniqDepartments(list: DepartmentCode[]): DepartmentCode[] {
+function uniqDepartments(list: Department[]): Department[] {
   return Array.from(new Set(list));
 }
 
@@ -54,7 +37,7 @@ export default function SignupPage() {
 
   const [username, setUsername] = useState("");
   const [name, setName] = useState("");
-  const [departments, setDepartments] = useState<DepartmentCode[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [phoneNumber, setPhoneNumber] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
@@ -85,7 +68,7 @@ export default function SignupPage() {
     return true;
   }, [usernameOk, nameOk, departmentsOk, phoneOk, pw, pwMismatch]);
 
-  const toggleDepartment = (dep: DepartmentCode) => {
+  const toggleDepartment = (dep: Department) => {
     setDepartments((prev) => {
       const next = new Set(prev);
       if (next.has(dep)) next.delete(dep);
@@ -99,10 +82,13 @@ export default function SignupPage() {
     setError(null);
     if (!canSubmit) return;
 
-    const payload: SignupPayload = {
+    const uniq = uniqDepartments(departments);
+
+    const payload: SignupPayloadCompat = {
       username: trimOrEmpty(username),
       name: trimOrEmpty(name),
-      departments: uniqDepartments(departments),
+      departments: uniq,
+      department: uniq[0], // legacy fallback
       phone_number: phoneDigits,
       password: pw,
       password_confirm: pw2,
@@ -120,10 +106,11 @@ export default function SignupPage() {
       });
 
       if (!res.ok) {
-        let msg = "Signup failed";
+        let msg = `Signup failed (HTTP ${res.status})`;
         try {
           const data = await res.json();
           msg = data?.detail ?? data?.message ?? msg;
+          if (typeof msg !== "string") msg = JSON.stringify(msg);
         } catch {
           const txt = await res.text();
           if (txt) msg = txt;
@@ -140,11 +127,11 @@ export default function SignupPage() {
   }
 
   const selectedLabels = useMemo(() => {
-    const map = new Map<DepartmentCode, string>(departmentOptions.map((o) => [o.value, o.label]));
+    if (departments.length === 0) return "-";
     return departments
       .slice()
-      .sort((a, b) => map.get(a)!.localeCompare(map.get(b)!))
-      .map((d) => map.get(d)!)
+      .map((d) => prettyDepartment(d))
+      .sort((a, b) => a.localeCompare(b))
       .join(", ");
   }, [departments]);
 
@@ -180,12 +167,9 @@ export default function SignupPage() {
               placeholder="표시할 이름 (1~50자)"
               autoComplete="name"
             />
-            {name.length > 0 && !nameOk && (
-              <p className="mt-1 text-xs text-red-600">이름은 1~50자여야 해요.</p>
-            )}
+            {name.length > 0 && !nameOk && <p className="mt-1 text-xs text-red-600">이름은 1~50자여야 해요.</p>}
           </div>
 
-          {/* 소속 팀: 4개씩 컴팩트 */}
           <div>
             <label className="block text-sm font-medium text-gray-700">소속 팀 (복수 선택 가능)</label>
             <div className="mt-2 grid grid-cols-4 gap-1.5">
@@ -198,9 +182,7 @@ export default function SignupPage() {
                     onClick={() => toggleDepartment(opt.value)}
                     className={[
                       "flex items-center justify-between rounded-lg border px-2 py-1.5 text-xs",
-                      checked
-                        ? "border-indigo-500 bg-indigo-50"
-                        : "border-gray-300 bg-white hover:bg-gray-50",
+                      checked ? "border-indigo-500 bg-indigo-50" : "border-gray-300 bg-white hover:bg-gray-50",
                     ].join(" ")}
                     aria-pressed={checked}
                   >
@@ -218,12 +200,10 @@ export default function SignupPage() {
             </div>
 
             <div className="mt-2 text-xs text-gray-500">
-              선택됨: <span className="text-gray-800">{selectedLabels || "-"}</span>
+              선택됨: <span className="text-gray-800">{selectedLabels}</span>
             </div>
 
-            {!departmentsOk && (
-              <p className="mt-1 text-xs text-red-600">소속 팀은 최소 1개 선택해야 해요.</p>
-            )}
+            {!departmentsOk && <p className="mt-1 text-xs text-red-600">소속 팀은 최소 1개 선택해야 해요.</p>}
           </div>
 
           <div>
@@ -269,9 +249,7 @@ export default function SignupPage() {
           </div>
 
           {error && (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error}
-            </div>
+            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
           )}
 
           <button
@@ -293,45 +271,33 @@ export default function SignupPage() {
 }
 
 
-
 // // FILE: frontend/src/pages/SignupPage.tsx
 
 // import React, { useMemo, useState } from "react";
 // import { Link, useNavigate } from "react-router-dom";
+// import type { Department } from "@/data/departments";
+// import { DEPARTMENTS, DEPARTMENT_LABEL } from "@/data/departments";
 
 // /**
 //  * IMPORTANT:
-//  * - UI labels are Korean (물리/화학/...), but the value sent to backend is an enum code string.
+//  * - UI labels are Korean, but the value sent to backend is an enum code string.
 //  * - Backend Department enum must match these codes.
+//  * - Multi departments selectable on signup (ADMIN is role, not a selectable department).
 //  */
-
-// type DepartmentCode =
-//   | "PHYSICS_1"
-//   | "CHEMISTRY_1"
-//   | "BIOLOGY_1"
-//   | "EARTH_1"
-//   | "CHEMISTRY_2"
-//   | "SOCIOCULTURE"
-//   | "MATH";
 
 // type SignupPayload = {
 //   username: string;
-//   name: string; // ✅ NEW
-//   department: DepartmentCode;
-//   phone_number: string; // digits only, e.g. 01012345678
+//   name: string;
+//   departments: Department[];
+//   phone_number: string;
 //   password: string;
 //   password_confirm: string;
 // };
 
-// const departmentOptions: { value: DepartmentCode; label: string }[] = [
-//   { value: "PHYSICS_1", label: "물리1" },
-//   { value: "CHEMISTRY_1", label: "화학1" },
-//   { value: "BIOLOGY_1", label: "생물1" },
-//   { value: "EARTH_1", label: "지구1" },
-//   { value: "CHEMISTRY_2", label: "화학2" },
-//   { value: "SOCIOCULTURE", label: "사회문화" },
-//   { value: "MATH", label: "수학" },
-// ];
+// const departmentOptions: { value: Department; label: string }[] = DEPARTMENTS.map((d) => ({
+//   value: d,
+//   label: DEPARTMENT_LABEL[d],
+// }));
 
 // function digitsOnly(v: string): string {
 //   return v.replace(/[^\d]/g, "");
@@ -341,12 +307,25 @@ export default function SignupPage() {
 //   return typeof v === "string" ? v.trim() : "";
 // }
 
+// function uniqDepartments(list: Department[]): Department[] {
+//   return Array.from(new Set(list));
+// }
+
+// function stringifyDetail(detail: unknown): string {
+//   if (typeof detail === "string") return detail;
+//   try {
+//     return JSON.stringify(detail, null, 2);
+//   } catch {
+//     return String(detail);
+//   }
+// }
+
 // export default function SignupPage() {
 //   const nav = useNavigate();
 
 //   const [username, setUsername] = useState("");
-//   const [name, setName] = useState(""); // ✅ NEW
-//   const [department, setDepartment] = useState<DepartmentCode | "">("");
+//   const [name, setName] = useState("");
+//   const [departments, setDepartments] = useState<Department[]>([]);
 //   const [phoneNumber, setPhoneNumber] = useState("");
 //   const [pw, setPw] = useState("");
 //   const [pw2, setPw2] = useState("");
@@ -354,40 +333,38 @@ export default function SignupPage() {
 //   const [submitting, setSubmitting] = useState(false);
 //   const [error, setError] = useState<string | null>(null);
 
-//   const usernameOk = useMemo(() => {
-//     const v = username.trim();
-//     return /^[a-zA-Z0-9_]{4,20}$/.test(v);
-//   }, [username]);
-
+//   const usernameOk = useMemo(() => /^[a-zA-Z0-9_]{4,20}$/.test(username.trim()), [username]);
 //   const nameOk = useMemo(() => {
 //     const v = name.trim();
 //     return v.length >= 1 && v.length <= 50;
 //   }, [name]);
 
-//   const departmentOk = useMemo(() => department !== "", [department]);
+//   const departmentsOk = useMemo(() => departments.length > 0, [departments]);
 
 //   const phoneDigits = useMemo(() => digitsOnly(phoneNumber), [phoneNumber]);
-
-//   const phoneOk = useMemo(() => {
-//     return phoneDigits.length >= 10 && phoneDigits.length <= 11;
-//   }, [phoneDigits]);
+//   const phoneOk = useMemo(() => phoneDigits.length >= 10 && phoneDigits.length <= 11, [phoneDigits]);
 
 //   const pwTooShort = useMemo(() => pw.length > 0 && pw.length < 8, [pw]);
-
-//   const pwMismatch = useMemo(() => {
-//     if (!pw || !pw2) return false;
-//     return pw !== pw2;
-//   }, [pw, pw2]);
+//   const pwMismatch = useMemo(() => pw && pw2 && pw !== pw2, [pw, pw2]);
 
 //   const canSubmit = useMemo(() => {
 //     if (!usernameOk) return false;
 //     if (!nameOk) return false;
-//     if (!departmentOk) return false;
+//     if (!departmentsOk) return false;
 //     if (!phoneOk) return false;
 //     if (pw.length < 8) return false;
 //     if (pwMismatch) return false;
 //     return true;
-//   }, [usernameOk, nameOk, departmentOk, phoneOk, pw, pwMismatch]);
+//   }, [usernameOk, nameOk, departmentsOk, phoneOk, pw, pwMismatch]);
+
+//   const toggleDepartment = (dep: Department) => {
+//     setDepartments((prev) => {
+//       const next = new Set(prev);
+//       if (next.has(dep)) next.delete(dep);
+//       else next.add(dep);
+//       return Array.from(next);
+//     });
+//   };
 
 //   async function onSubmit(e: React.FormEvent) {
 //     e.preventDefault();
@@ -396,8 +373,8 @@ export default function SignupPage() {
 
 //     const payload: SignupPayload = {
 //       username: trimOrEmpty(username),
-//       name: trimOrEmpty(name), // ✅ NEW
-//       department: department as DepartmentCode,
+//       name: trimOrEmpty(name),
+//       departments: uniqDepartments(departments),
 //       phone_number: phoneDigits,
 //       password: pw,
 //       password_confirm: pw2,
@@ -405,7 +382,6 @@ export default function SignupPage() {
 
 //     try {
 //       setSubmitting(true);
-
 //       const baseUrl = import.meta.env.VITE_API_BASE_URL;
 //       if (!baseUrl) throw new Error("VITE_API_BASE_URL is not set");
 
@@ -416,10 +392,12 @@ export default function SignupPage() {
 //       });
 
 //       if (!res.ok) {
-//         let msg = "Signup failed";
+//         let msg = `Signup failed (HTTP ${res.status})`;
 //         try {
 //           const data = await res.json();
-//           msg = data?.detail ?? data?.message ?? msg;
+//           if (data?.detail !== undefined) msg = stringifyDetail(data.detail);
+//           else if (data?.message !== undefined) msg = stringifyDetail(data.message);
+//           else msg = stringifyDetail(data);
 //         } catch {
 //           const txt = await res.text();
 //           if (txt) msg = txt;
@@ -435,13 +413,20 @@ export default function SignupPage() {
 //     }
 //   }
 
+//   const selectedLabels = useMemo(() => {
+//     const map = new Map<Department, string>(departmentOptions.map((o) => [o.value, o.label]));
+//     return departments
+//       .slice()
+//       .sort((a, b) => (map.get(a) ?? a).localeCompare(map.get(b) ?? b))
+//       .map((d) => map.get(d) ?? d)
+//       .join(", ");
+//   }, [departments]);
+
 //   return (
 //     <div className="min-h-screen grid place-items-center bg-gray-50 px-4">
 //       <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
 //         <h1 className="text-xl font-semibold text-gray-900">회원가입</h1>
-//         <p className="mt-1 text-sm text-gray-500">
-//           가입 요청 후 관리자가 승인하면 로그인할 수 있어요.
-//         </p>
+//         <p className="mt-1 text-sm text-gray-500">가입 요청 후 관리자가 승인하면 로그인할 수 있어요.</p>
 
 //         <form onSubmit={onSubmit} className="mt-6 space-y-4">
 //           <div>
@@ -460,7 +445,6 @@ export default function SignupPage() {
 //             )}
 //           </div>
 
-//           {/* ✅ NEW: name */}
 //           <div>
 //             <label className="block text-sm font-medium text-gray-700">이름</label>
 //             <input
@@ -470,30 +454,43 @@ export default function SignupPage() {
 //               placeholder="표시할 이름 (1~50자)"
 //               autoComplete="name"
 //             />
-//             {name.length > 0 && !nameOk && (
-//               <p className="mt-1 text-xs text-red-600">이름은 1~50자여야 해요.</p>
-//             )}
+//             {name.length > 0 && !nameOk && <p className="mt-1 text-xs text-red-600">이름은 1~50자여야 해요.</p>}
 //           </div>
 
 //           <div>
-//             <label className="block text-sm font-medium text-gray-700">소속 팀</label>
-//             <select
-//               value={department}
-//               onChange={(e) => setDepartment(e.target.value as DepartmentCode)}
-//               className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-//             >
-//               <option value="" disabled>
-//                 선택하세요
-//               </option>
-//               {departmentOptions.map((opt) => (
-//                 <option key={opt.value} value={opt.value}>
-//                   {opt.label}
-//                 </option>
-//               ))}
-//             </select>
-//             {!departmentOk && (
-//               <p className="mt-1 text-xs text-red-600">소속 팀은 반드시 선택해야 해요.</p>
-//             )}
+//             <label className="block text-sm font-medium text-gray-700">소속 팀 (복수 선택 가능)</label>
+//             <div className="mt-2 grid grid-cols-4 gap-1.5">
+//               {departmentOptions.map((opt) => {
+//                 const checked = departments.includes(opt.value);
+//                 return (
+//                   <button
+//                     key={opt.value}
+//                     type="button"
+//                     onClick={() => toggleDepartment(opt.value)}
+//                     className={[
+//                       "flex items-center justify-between rounded-lg border px-2 py-1.5 text-xs",
+//                       checked ? "border-indigo-500 bg-indigo-50" : "border-gray-300 bg-white hover:bg-gray-50",
+//                     ].join(" ")}
+//                     aria-pressed={checked}
+//                   >
+//                     <span className="text-gray-900 truncate">{opt.label}</span>
+//                     <span
+//                       className={[
+//                         "h-3.5 w-3.5 rounded border flex-shrink-0",
+//                         checked ? "border-indigo-500 bg-indigo-600" : "border-gray-300 bg-white",
+//                       ].join(" ")}
+//                       aria-hidden="true"
+//                     />
+//                   </button>
+//                 );
+//               })}
+//             </div>
+
+//             <div className="mt-2 text-xs text-gray-500">
+//               선택됨: <span className="text-gray-800">{selectedLabels || "-"}</span>
+//             </div>
+
+//             {!departmentsOk && <p className="mt-1 text-xs text-red-600">소속 팀은 최소 1개 선택해야 해요.</p>}
 //           </div>
 
 //           <div>
@@ -522,9 +519,7 @@ export default function SignupPage() {
 //               placeholder="최소 8자"
 //               autoComplete="new-password"
 //             />
-//             {pwTooShort && (
-//               <p className="mt-1 text-xs text-red-600">비밀번호는 최소 8자 이상이어야 해요.</p>
-//             )}
+//             {pwTooShort && <p className="mt-1 text-xs text-red-600">비밀번호는 최소 8자 이상이어야 해요.</p>}
 //           </div>
 
 //           <div>
@@ -541,7 +536,7 @@ export default function SignupPage() {
 //           </div>
 
 //           {error && (
-//             <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+//             <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 whitespace-pre-wrap">
 //               {error}
 //             </div>
 //           )}

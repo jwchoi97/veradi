@@ -1,19 +1,17 @@
 # FILE: backend/app/routers/projects.py
 
-from fastapi import APIRouter, Depends, HTTPException, Header
-from sqlalchemy.orm import Session
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import func
+from sqlalchemy.orm import Session
 from typing import List
 
-from ..mariadb.database import SessionLocal
-from ..mariadb.models import Project, FileAsset, User, UserRole
-from ..minio.service import delete_project_files_by_keys
-from ..schemas import (
-    ProjectCreate,
-    ProjectUpdate,
-    ProjectOut,
-)
 from ..authz import ensure_can_create_project, ensure_can_manage_project
+from ..mariadb.database import SessionLocal
+from ..mariadb.models import FileAsset, Project, UserRole
+from ..minio.service import delete_project_files_by_keys
+from ..schemas import ProjectCreate, ProjectOut, ProjectUpdate
 from .auth import get_current_user
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -35,8 +33,10 @@ def create_project(
 ):
     user = get_current_user(db, x_user_id)
 
-    # ADMIN/LEAD only + department constraint for LEAD
-    ensure_can_create_project(user, payload.owner_department)
+    # ✅ Policy:
+    # - ADMIN: can create any subject
+    # - LEAD: can create only their own department(=subject)
+    ensure_can_create_project(user, payload.subject)
 
     item = Project(
         name=payload.name,
@@ -49,10 +49,8 @@ def create_project(
         deadline_final=payload.deadline_final,
         status=payload.status or "OPEN",
         year=payload.year,
-
-        # ✅ NEW
-        owner_department=payload.owner_department,
     )
+
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -71,7 +69,9 @@ def delete_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # ADMIN: any / LEAD: only own departments
+    # ✅ Policy:
+    # - ADMIN: can delete any
+    # - LEAD: can delete only projects with subject == their department
     ensure_can_manage_project(user, project)
 
     files = db.query(FileAsset).filter(FileAsset.project_id == project_id).all()
@@ -100,7 +100,9 @@ def list_projects(db: Session = Depends(get_db)):
     q = (
         db.query(Project)
         .filter(func.length(func.trim(Project.name)) > 0)
-        .filter(func.length(func.trim(Project.subject)) > 0)
+        # subject is Enum now, so string trim/length doesn't apply.
+        # During migration there might be NULL rows; filter them out.
+        .filter(Project.subject.isnot(None))
         .order_by(Project.id.desc())
     )
     return q.all()
@@ -114,7 +116,7 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
 
     if not project.name or not project.name.strip():
         raise HTTPException(status_code=500, detail="Project has invalid name in DB")
-    if not project.subject or not project.subject.strip():
+    if project.subject is None:
         raise HTTPException(status_code=500, detail="Project has invalid subject in DB")
 
     return project
@@ -133,8 +135,7 @@ def update_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # ✅ Update 권한도 동일하게 묶음 (생성/삭제와 같은 정책)
-    # ADMIN: any / LEAD: only own departments
+    # ✅ Update also follows same management policy
     ensure_can_manage_project(user, project)
 
     if payload.name is not None:
@@ -153,20 +154,12 @@ def update_project(
 
     if payload.deadline is not None:
         project.deadline = payload.deadline
-
     if payload.deadline_1 is not None:
         project.deadline_1 = payload.deadline_1
     if payload.deadline_2 is not None:
         project.deadline_2 = payload.deadline_2
     if payload.deadline_final is not None:
         project.deadline_final = payload.deadline_final
-
-    # optional fix
-    if payload.owner_department is not None:
-        # only ADMIN can change ownership (safe guard)
-        if user.role != UserRole.ADMIN:
-            raise HTTPException(status_code=403, detail="Admin only")
-        project.owner_department = payload.owner_department
 
     db.add(project)
     db.commit()

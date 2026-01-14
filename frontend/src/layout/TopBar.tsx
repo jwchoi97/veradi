@@ -2,19 +2,7 @@ import React from "react";
 import "./TopBar.css";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { clearToken } from "@/auth";
-
-type AuthedUser = {
-  id: number;
-  username: string;
-  name?: string | null;
-  role: string;
-
-  // legacy single
-  department: string;
-
-  // NEW multi (optional, backward compatible)
-  departments?: string[] | null;
-};
+import type { AuthedUser } from "@/auth";
 
 type TopBarProps = {
   sidebarOpen: boolean;
@@ -30,16 +18,13 @@ function prettyDepartment(dep?: string | null): string {
 
 function normalizeDepartments(me: AuthedUser | null): string[] {
   if (!me) return [];
-
   const raw = Array.isArray(me.departments) ? me.departments : [];
   const cleaned = raw
     .map((d) => (typeof d === "string" ? d.trim() : ""))
     .filter((d) => d.length > 0);
 
-  // If departments exist, prefer them; otherwise fallback to legacy single.
   const base = cleaned.length > 0 ? cleaned : [me.department].filter(Boolean);
 
-  // Dedup preserving order
   const seen = new Set<string>();
   const out: string[] = [];
   for (const d of base) {
@@ -61,16 +46,13 @@ export default function TopBar({ sidebarOpen, onToggleSidebar, me }: TopBarProps
   const rawSegments = loc.pathname.split("/").filter(Boolean);
   const lower = rawSegments.map((s) => s.toLowerCase());
 
-  // ---- page detection ----
   const mockIdx = lower.indexOf("mock");
   const adminIdx = lower.indexOf("admin");
 
   const isMockPage = mockIdx >= 0;
   const isAdminPage = adminIdx >= 0;
 
-  // ---- real existing route prefix ----
   const mockHref = isMockPage ? "/" + rawSegments.slice(0, mockIdx + 1).join("/") : null;
-
   const adminHref = isAdminPage ? "/" + rawSegments.slice(0, adminIdx + 1).join("/") : null;
 
   const onLogout = () => {
@@ -127,18 +109,13 @@ export default function TopBar({ sidebarOpen, onToggleSidebar, me }: TopBarProps
         {me ? (
           <div className="topbar-me" title={`${me.username} · ${me.role}`}>
             <span className="me-name">{displayName}</span>
-
-            {departments.length > 0 ? (
-              <span className="me-deps" aria-label="Departments">
-                {departments.map((d) => (
-                  <span key={d} className="me-pill">
-                    {prettyDepartment(d)}
-                  </span>
-                ))}
-              </span>
-            ) : (
-              <span className="me-pill">{prettyDepartment(me.department)}</span>
-            )}
+            <span className="me-deps" aria-label="Departments">
+              {departments.map((d) => (
+                <span key={d} className="me-pill">
+                  {prettyDepartment(d)}
+                </span>
+              ))}
+            </span>
           </div>
         ) : null}
 
@@ -149,6 +126,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar, me }: TopBarProps
     </header>
   );
 }
+
 
 
 // // FILE: frontend/src/layout/TopBar.tsx
