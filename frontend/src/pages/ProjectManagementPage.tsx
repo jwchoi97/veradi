@@ -1,6 +1,5 @@
 
 import React, { useEffect, useMemo, useState } from "react";
-import PendingApprovalsSection from "@/pages/PendingApprovalsSection";
 import ProjectListTable from "@/components/projects/ProjectListTable";
 import type { ViewOption } from "@/components/projects/ProjectListTable";
 import ProjectBulkDeleteModal from "@/components/projects/ProjectBulkDeleteModal";
@@ -9,7 +8,6 @@ import { Trash2 } from "lucide-react";
 import { getAuthedUser } from "@/auth";
 
 import { DEPARTMENTS, DEPARTMENT_LABEL, prettyDepartment } from "@/data/departments";
-import type { Department } from "@/data/departments";
 
 import {
   fetchProjects,
@@ -45,7 +43,7 @@ function getSubjectCode(p: Project): string {
   return code;
 }
 
-export default function ProjectAdminPage() {
+export default function ProjectManagementPage() {
   const me = getAuthedUser();
 
   const [projects, setProjects] = useState<Project[]>([]);
@@ -298,6 +296,7 @@ export default function ProjectAdminPage() {
 
       // Legacy compatibility
       deadline: trimOrEmpty((form as any).deadline_final ?? "") || null,
+      target_individual_items_count: (form as any).target_individual_items_count ?? 20,
     };
 
     if (!payload.name || !payload.subject || !payload.deadline_final) {
@@ -453,7 +452,7 @@ export default function ProjectAdminPage() {
     <div className="w-full min-h-[calc(100vh-64px)] px-4 md:px-6 py-4 text-gray-900 space-y-4">
       <section className="rounded-3xl border border-slate-200/60 bg-white/80 p-5 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.55)] backdrop-blur flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-slate-900">프로젝트 관리자 페이지</h1>
+          <h1 className="text-xl font-semibold tracking-tight text-slate-900">프로젝트 관리</h1>
           <p className="text-sm leading-6 text-slate-600">프로젝트를 등록하고 현재 등록된 프로젝트 목록을 관리합니다.</p>
 
           <div className="mt-2 text-xs text-slate-500">
@@ -738,11 +737,6 @@ export default function ProjectAdminPage() {
         onCancel={() => setIsDeleteModalOpen(false)}
         onConfirm={() => void confirmBulkDelete()}
       />
-
-      <div className="space-y-6">
-        <PendingApprovalsSection />
-      </div>
     </div>
   );
 }
-

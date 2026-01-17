@@ -1,5 +1,3 @@
-# FILE: backend/app/routers/projects.py
-
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -49,6 +47,7 @@ def create_project(
         deadline_final=payload.deadline_final,
         status=payload.status or "OPEN",
         year=payload.year,
+        target_individual_items_count=payload.target_individual_items_count or 20,
     )
 
     db.add(item)
@@ -161,8 +160,38 @@ def update_project(
     if payload.deadline_final is not None:
         project.deadline_final = payload.deadline_final
 
+    if payload.target_individual_items_count is not None:
+        project.target_individual_items_count = payload.target_individual_items_count
+
     db.add(project)
     db.commit()
     db.refresh(project)
     return project
+
+
+@router.get("/{project_id}/individual-items/count")
+def get_project_individual_items_count(
+    project_id: int,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """프로젝트별 개별 문항 개수를 반환합니다."""
+    user = get_current_user(db, x_user_id)
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    ensure_can_manage_project(user, project)
+
+    # file_type이 "개별문항"인 파일들의 개수를 세기
+    count = (
+        db.query(func.count(FileAsset.id))
+        .filter(
+            FileAsset.project_id == project_id,
+            FileAsset.file_type == "개별문항"
+        )
+        .scalar()
+    )
+
+    return {"project_id": project_id, "individual_items_count": count or 0}
 

@@ -51,6 +51,9 @@ export interface Project {
 
   // ✅ NEW: ownership department (for LEAD restriction)
   owner_department?: string | null;
+
+  // 개별 문항 목표 개수
+  target_individual_items_count?: number;
 }
 
 export interface CreateProjectRequest {
@@ -71,6 +74,9 @@ export interface CreateProjectRequest {
 
   // ✅ NEW: ownership department (for LEAD restriction)
   owner_department?: string | null;
+
+  // 개별 문항 목표 개수
+  target_individual_items_count?: number;
 }
 
 export interface UpdateProjectRequest {
@@ -89,6 +95,9 @@ export interface UpdateProjectRequest {
 
   // optional update (if you later allow editing ownership)
   owner_department?: string | null;
+
+  // 개별 문항 목표 개수
+  target_individual_items_count?: number;
 }
 
 export interface FileAsset {
@@ -100,6 +109,7 @@ export interface FileAsset {
   size?: number | null;
   created_at: string;
   file_type?: string | null;
+  uploaded_by_user_id?: number | null; // 누가 업로드했는지 기록
 }
 
 //////////////////////////
@@ -155,6 +165,94 @@ export async function getFileDownloadUrl(projectId: number, fileId: number) {
   const res = await api.get<{ id: number; url: string; expires_minutes: number }>(
     `/projects/${projectId}/files/${fileId}/download`
   );
+  return res.data;
+}
+
+export async function getProjectIndividualItemsCount(projectId: number): Promise<{ project_id: number; individual_items_count: number }> {
+  const res = await api.get<{ project_id: number; individual_items_count: number }>(
+    `/projects/${projectId}/individual-items/count`
+  );
+  return res.data;
+}
+
+///////////////
+// USER API //
+///////////////
+
+export interface UserInfo {
+  id: number;
+  username: string;
+  name: string | null;
+  role: string;
+  department: string;
+  departments: string[];
+  phone_number: string | null;
+  phone_verified: boolean;
+  profile_image_url: string | null;
+}
+
+export interface UserUpdateRequest {
+  name?: string;
+  phone_number?: string;
+}
+
+export interface ContributionStats {
+  year: string;
+  individual_items_count: number;
+  content_files_count: number;
+  total_files_count: number;
+}
+
+export async function getCurrentUserInfo(): Promise<UserInfo> {
+  const res = await api.get<UserInfo>("/auth/me");
+  return res.data;
+}
+
+export async function updateUserInfo(payload: UserUpdateRequest): Promise<UserInfo> {
+  const res = await api.patch<UserInfo>("/auth/me", payload);
+  return res.data;
+}
+
+export async function getUserContributions(year?: string): Promise<ContributionStats[]> {
+  const params = year ? { year } : {};
+  const res = await api.get<ContributionStats[]>("/auth/me/contributions", { params });
+  return res.data;
+}
+
+export async function uploadProfileImage(file: File): Promise<{ profile_image_url: string }> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const res = await api.post<{ profile_image_url: string }>("/auth/me/profile-image", formData, {
+    headers: {
+      "Content-Type": "multipart/form-data",
+    },
+  });
+  return res.data;
+}
+
+export async function deleteProfileImage(): Promise<void> {
+  await api.delete("/auth/me/profile-image");
+}
+
+///////////////
+// ACTIVITY API //
+///////////////
+
+export interface ActivityItem {
+  id: number;
+  type: "file_upload" | "file_delete" | "review";
+  timestamp: string;
+  user_name: string | null;
+  project_name: string;
+  project_year: string | null;
+  file_name: string | null;
+  file_type: string | null;
+  description: string;
+}
+
+export async function getRecentActivities(limit: number = 10): Promise<ActivityItem[]> {
+  const res = await api.get<ActivityItem[]>("/auth/activities", { params: { limit } });
   return res.data;
 }
 

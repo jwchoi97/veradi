@@ -19,15 +19,6 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-# def upgrade() -> None:
-#     """Upgrade schema."""
-#     pass
-
-
-# def downgrade() -> None:
-#     """Downgrade schema."""
-#     pass
-
 def upgrade():
     op.execute(
         "ALTER TABLE users "

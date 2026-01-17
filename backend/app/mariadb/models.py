@@ -1,5 +1,3 @@
-# FILE: backend/app/mariadb/models.py
-
 from __future__ import annotations
 
 import enum
@@ -65,6 +63,9 @@ class User(Base):
     phone_number = Column(String(32), unique=True, index=True, nullable=False)
     phone_verified = Column(Boolean, nullable=False, default=False)
 
+    # 프로필 사진 URL
+    profile_image_url = Column(String(512), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -120,6 +121,9 @@ class Project(Base):
     # Storage identifier
     slug = Column(String(200), nullable=True, unique=True, index=True)
 
+    # 개별 문항 목표 개수 (기본값 20)
+    target_individual_items_count = Column(Integer, nullable=False, default=20)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -149,9 +153,65 @@ class FileAsset(Base):
     size = Column(Integer, nullable=True)
     file_type = Column(String(32), nullable=True)
 
+    # 누가 업로드했는지 기록 (기여도 평가를 위해)
+    uploaded_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     project = relationship("Project", back_populates="files")
+    uploaded_by = relationship("User", foreign_keys=[uploaded_by_user_id])
+
+
+class Activity(Base):
+    __tablename__ = "activities"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # 활동 타입: "file_upload", "file_delete", "review" (나중에 추가)
+    activity_type = Column(String(32), nullable=False, index=True)
+
+    # 프로젝트 (필수)
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # 파일 정보 (nullable - 삭제된 파일도 참조 가능하도록)
+    file_asset_id = Column(
+        Integer,
+        ForeignKey("files.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # 누가 활동을 했는지
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # 파일 정보 (삭제 후에도 보관하기 위해 별도 저장)
+    file_name = Column(String(255), nullable=True)
+    file_type = Column(String(32), nullable=True)
+
+    # 간결한 설명
+    description = Column(String(500), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    # Relationships
+    project = relationship("Project")
+    file_asset = relationship("FileAsset", foreign_keys=[file_asset_id])
+    user = relationship("User", foreign_keys=[user_id])
 
 
 # --------------------

@@ -20,16 +20,16 @@ export default function ProjectBulkDeleteModal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
-        <h2 className="text-lg font-semibold">정말 삭제할까요?</h2>
-        <p className="text-sm text-gray-600 mt-1">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
+      <div className="w-full max-w-lg rounded-3xl border border-slate-200/60 bg-white/90 p-6 shadow-[0_22px_55px_-30px_rgba(15,23,42,0.60)] backdrop-blur">
+        <h2 className="text-lg font-semibold tracking-tight text-slate-900">정말 삭제할까요?</h2>
+        <p className="text-sm leading-6 text-slate-600 mt-1">
           아래 프로젝트 {projects.length}개를 삭제합니다. 삭제 후 복구할 수 없습니다.
         </p>
 
-        <div className="mt-4 max-h-72 overflow-auto rounded-xl border bg-gray-50">
+        <div className="mt-4 max-h-72 overflow-auto rounded-2xl border border-slate-200/60 bg-white">
           <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-gray-100 text-xs text-gray-600">
+            <thead className="sticky top-0 bg-slate-50/90 backdrop-blur text-xs font-semibold text-slate-600">
               <tr>
                 <th className="px-3 py-2 text-left w-20">ID</th>
                 <th className="px-3 py-2 text-left w-24">학년도</th>
@@ -40,12 +40,12 @@ export default function ProjectBulkDeleteModal({
             </thead>
             <tbody>
               {projects.map((p) => (
-                <tr key={p.id} className="border-t">
-                  <td className="px-3 py-2 text-xs text-gray-500">{p.id}</td>
-                  <td className="px-3 py-2">{(p as any).year ?? "-"}</td>
-                  <td className="px-3 py-2">{p.name}</td>
-                  <td className="px-3 py-2">{p.subject}</td>
-                  <td className="px-3 py-2">
+                <tr key={p.id} className="border-t border-slate-100">
+                  <td className="px-3 py-2 text-xs text-slate-500">{p.id}</td>
+                  <td className="px-3 py-2 text-slate-700">{(p as any).year ?? "-"}</td>
+                  <td className="px-3 py-2 font-medium text-slate-900">{p.name}</td>
+                  <td className="px-3 py-2 text-slate-700">{p.subject}</td>
+                  <td className="px-3 py-2 text-slate-700">
                     {(p as any).deadline ? String((p as any).deadline).split("T")[0] : "-"}
                   </td>
                 </tr>
@@ -58,7 +58,7 @@ export default function ProjectBulkDeleteModal({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-xl border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
+            className="h-10 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
             disabled={!!loading}
           >
             아니오
@@ -66,7 +66,7 @@ export default function ProjectBulkDeleteModal({
           <button
             type="button"
             onClick={onConfirm}
-            className="rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60"
+            className="h-10 rounded-2xl bg-rose-600 px-4 text-sm font-semibold text-white shadow-[0_14px_34px_-22px_rgba(225,29,72,0.55)] hover:bg-rose-700 disabled:opacity-60"
             disabled={!!loading}
           >
             {loading ? "삭제 중..." : "삭제"}

@@ -75,6 +75,9 @@ export default function ProjectListTable({
   selectedIds,
   onToggleSelect,
   onToggleSelectAll,
+
+  // render before action (e.g., count display)
+  renderBeforeAction,
 }: {
   title?: string;
   projects: Project[];
@@ -97,6 +100,8 @@ export default function ProjectListTable({
   selectedIds?: Set<number>;
   onToggleSelect?: (id: number) => void;
   onToggleSelectAll?: (idsOnPage: number[]) => void;
+
+  renderBeforeAction?: (p: Project) => React.ReactNode;
 }) {
   const [year, setYear] = useState("전체");
   const [subject, setSubject] = useState("전체");
@@ -177,9 +182,9 @@ export default function ProjectListTable({
   }, [selectable, selectedIds, idsOnPage, allSelectedOnPage]);
 
   return (
-    <section className="rounded-2xl border bg-white p-4 shadow-sm">
+    <section className="max-w-full overflow-hidden rounded-3xl border border-slate-200/60 bg-white/80 p-5 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.55)] backdrop-blur">
       {/* filters */}
-      <div className="flex flex-wrap items-end gap-4 mb-3">
+      <div className="flex flex-wrap items-end gap-4 mb-4">
         <LabeledSelect label="학년도 선택" value={year} onChange={setYear} options={years} />
         <LabeledSelect label="과목 선택" value={subject} onChange={setSubject} options={subjects} />
         <LabeledSelect
@@ -190,16 +195,21 @@ export default function ProjectListTable({
         />
       </div>
 
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold">{title}</h2>
-        <div className="text-xs text-gray-500">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold tracking-tight text-slate-900">{title}</h2>
+        <div className="text-xs text-slate-500">
           {filteredProjects.length}개 · {page}/{totalPages} 페이지
         </div>
       </div>
 
-      <div className="h-[560px] overflow-y-auto border-t" style={{ scrollbarGutter: "stable" as any }}>
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50 sticky top-0 z-10">
+      {/* ✅ Scroll is confined to the list box (not the whole page) */}
+      <div className="w-full max-w-full rounded-2xl border border-slate-200/60 bg-white overflow-hidden">
+        <div
+          className="h-[560px] max-w-full overflow-x-scroll overflow-y-auto overscroll-contain"
+          style={{ scrollbarGutter: "stable" as any }}
+        >
+          <table className="min-w-[1120px] w-full text-sm">
+            <thead className="bg-slate-50/90 backdrop-blur sticky top-0 z-10">
             <tr>
               {selectable ? (
                 <th className="w-10 px-2">
@@ -216,48 +226,51 @@ export default function ProjectListTable({
               ) : null}
 
               {renderLeadingCell ? <th className="w-8">{leadingHeader ?? ""}</th> : null}
-              <th className="text-left px-3 py-2">프로젝트명</th>
-              <th className="text-left px-3 py-2">카테고리</th>
-              <th className="text-left px-3 py-2">과목</th>
-              <th className="text-left px-3 py-2">학년도</th>
-              <th className="text-left px-3 py-2">마감일</th>
-              <th className="text-left px-3 py-2">{actionHeader}</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold tracking-wide text-slate-600">프로젝트명</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold tracking-wide text-slate-600">카테고리</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold tracking-wide text-slate-600">과목</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold tracking-wide text-slate-600">학년도</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold tracking-wide text-slate-600">마감일</th>
+              {renderBeforeAction ? (
+                <th className="text-right px-4 py-3 text-xs font-semibold tracking-wide text-slate-600"></th>
+              ) : null}
+              <th className="text-left px-4 py-3 text-xs font-semibold tracking-wide text-slate-600">{actionHeader}</th>
             </tr>
-          </thead>
+            </thead>
 
-          <tbody>
+            <tbody>
             {paddedProjects.map((p, idx) => {
               if (!p) {
                 return (
-                  <tr key={`ph-${idx}`} className="border-t">
+                  <tr key={`ph-${idx}`} className="border-t border-slate-100">
                     {selectable ? (
-                      <td className="px-2 py-2">
+                      <td className="px-2 py-3">
                         <span className="text-transparent">□</span>
                       </td>
                     ) : null}
 
                     {renderLeadingCell ? (
-                      <td className="px-2 py-2">
+                      <td className="px-2 py-3">
                         <span className="text-transparent">▸</span>
                       </td>
                     ) : null}
 
-                    <td className="px-3 py-2">
+                    <td className="px-4 py-3">
                       <span className="text-transparent">placeholder</span>
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-4 py-3">
                       <span className="text-transparent">placeholder</span>
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-4 py-3">
                       <span className="text-transparent">placeholder</span>
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-4 py-3">
                       <span className="text-transparent">placeholder</span>
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-4 py-3">
                       <span className="text-transparent">placeholder</span>
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-4 py-3">
                       <span className="text-transparent">placeholder</span>
                     </td>
                   </tr>
@@ -272,7 +285,12 @@ export default function ProjectListTable({
 
               return (
                 <React.Fragment key={p.id}>
-                  <tr className={["border-t hover:bg-gray-50", dueSoon ? "bg-yellow-50" : ""].join(" ")}>
+                  <tr
+                    className={[
+                      "border-t border-slate-100 hover:bg-slate-50/70",
+                      dueSoon ? "bg-amber-50/70 shadow-[inset_0_0_0_1px_rgba(251,191,36,0.35)]" : "",
+                    ].join(" ")}
+                  >
                     {selectable ? (
                       <td className="px-2" onClick={(e) => e.stopPropagation()}>
                         <input
@@ -297,40 +315,48 @@ export default function ProjectListTable({
                       </td>
                     ) : null}
 
-                    <td className="px-3 py-2">{p.name}</td>
-                    <td className="px-3 py-2">{(p as any).category ?? "기타"}</td>
-                    <td className="px-3 py-2">{p.subject}</td>
-                    <td className="px-3 py-2">{(p as any).year ?? "-"}</td>
+                    <td className="px-4 py-3 font-medium text-slate-900">{p.name}</td>
+                    <td className="px-4 py-3 text-slate-700">{(p as any).category ?? "기타"}</td>
+                    <td className="px-4 py-3 text-slate-700">{p.subject}</td>
+                    <td className="px-4 py-3 text-slate-700">{(p as any).year ?? "-"}</td>
 
-                    <td className="px-3 py-2">
-                      <div className="space-y-0.5">
-                        <div className="text-xs text-gray-600">
-                          1차: <span className="text-gray-900">{fmtDate((p as any).deadline_1)}</span>
-                        </div>
-                        <div className="text-xs text-gray-600">
-                          2차: <span className="text-gray-900">{fmtDate((p as any).deadline_2)}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-gray-600">
-                            최종: <span className="text-gray-900">{fmtDate((p as any).deadline_final)}</span>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-4 text-xs text-slate-600 whitespace-nowrap">
+                        <span>
+                          1차: <span className="text-slate-900">{fmtDate((p as any).deadline_1)}</span>
+                        </span>
+                        <span>
+                          2차: <span className="text-slate-900">{fmtDate((p as any).deadline_2)}</span>
+                        </span>
+                        <span className="flex items-center gap-2">
+                          <span>
+                            최종: <span className="text-slate-900">{fmtDate((p as any).deadline_final)}</span>
                           </span>
                           {dueSoon && left != null && (
-                            <span className="text-red-600 font-extrabold text-xs">D-{left}</span>
+                            <span className="rounded-full bg-rose-50 px-2 py-0.5 text-rose-700 font-extrabold text-[11px] ring-1 ring-rose-200">
+                              D-{left}
+                            </span>
                           )}
-                        </div>
+                        </span>
                       </div>
                     </td>
 
-                    <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                    {renderBeforeAction ? (
+                      <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                        {renderBeforeAction(p)}
+                      </td>
+                    ) : null}
+
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       {renderAction(p)}
                     </td>
                   </tr>
 
                   {open && renderExpandedRow ? (
-                    <tr className="bg-gray-50">
+                    <tr className="bg-slate-50">
                       <td
-                        colSpan={(selectable ? 1 : 0) + (renderLeadingCell ? 1 : 0) + 6}
-                        className="px-3 py-3"
+                        colSpan={(selectable ? 1 : 0) + (renderLeadingCell ? 1 : 0) + 6 + (renderBeforeAction ? 1 : 0)}
+                        className="px-4 py-4"
                       >
                         {renderExpandedRow(p)}
                       </td>
@@ -339,13 +365,14 @@ export default function ProjectListTable({
                 </React.Fragment>
               );
             })}
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* pagination */}
       <div className="flex items-center justify-between pt-3">
-        <div className="text-xs text-gray-500">
+        <div className="text-xs text-slate-500">
           {filteredProjects.length}개 중{" "}
           {filteredProjects.length === 0 ? 0 : (page - 1) * pageSize + 1}~
           {Math.min(page * pageSize, filteredProjects.length)} 표시
@@ -353,7 +380,7 @@ export default function ProjectListTable({
 
         <div className="flex items-center gap-2">
           <button
-            className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-40"
+            className="h-9 px-3 rounded-xl border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-40"
             disabled={page <= 1}
             onClick={goPrev}
           >
@@ -370,8 +397,8 @@ export default function ProjectListTable({
                 <button
                   key={`p-${it}`}
                   className={[
-                    "min-w-9 px-2 py-1.5 rounded-lg border text-sm",
-                    it === page ? "bg-gray-100" : "bg-white hover:bg-gray-50",
+                    "min-w-9 h-9 px-2 rounded-xl border border-slate-200 text-sm",
+                    it === page ? "bg-slate-100 text-slate-900" : "bg-white hover:bg-slate-50 text-slate-700",
                   ].join(" ")}
                   onClick={() => setPage(it)}
                   aria-current={it === page ? "page" : undefined}
@@ -383,7 +410,7 @@ export default function ProjectListTable({
           </div>
 
           <button
-            className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-40"
+            className="h-9 px-3 rounded-xl border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-40"
             disabled={page >= totalPages}
             onClick={goNext}
           >
@@ -407,10 +434,10 @@ function LabeledSelect({
   options: string[];
 }) {
   return (
-    <label className="flex flex-col w-48">
-      <span className="text-sm text-gray-600 mb-1">{label}</span>
+    <label className="flex flex-col w-52">
+      <span className="text-[11px] font-semibold tracking-wide text-slate-600 mb-1">{label}</span>
       <select
-        className="h-9 border rounded-md px-2 text-sm focus:border-indigo-600"
+        className="h-10 border border-slate-200 rounded-xl bg-white px-3 text-sm text-slate-800 shadow-sm focus:border-indigo-300 focus:outline-none focus:ring-4 focus:ring-indigo-200"
         value={value}
         onChange={(e) => onChange(e.target.value)}
       >

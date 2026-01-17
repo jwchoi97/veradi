@@ -20,6 +20,9 @@ export type AuthedUser = {
 
   // NEW multi (optional, backward compatible)
   departments?: string[];
+
+  // 프로필 이미지 URL (optional)
+  profile_image_url?: string | null;
 };
 
 export function setAuthedUser(u: AuthedUser) {

@@ -136,18 +136,25 @@ export default function SignupPage() {
   }, [departments]);
 
   return (
-    <div className="min-h-screen grid place-items-center bg-gray-50 px-4">
-      <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-        <h1 className="text-xl font-semibold text-gray-900">회원가입</h1>
-        <p className="mt-1 text-sm text-gray-500">가입 요청 후 관리자가 승인하면 로그인할 수 있어요.</p>
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-slate-100 px-4 py-12">
+      <div className="mx-auto w-full max-w-lg">
+        <div className="mb-6 text-center">
+          <div className="text-[11px] font-extrabold tracking-[0.28em] text-indigo-700">VERADI</div>
+          <div className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">Contents ERP</div>
+          <p className="mt-2 text-sm leading-6 text-slate-600">가입 요청 후 관리자가 승인하면 로그인할 수 있어요.</p>
+        </div>
 
-        <form onSubmit={onSubmit} className="mt-6 space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700">아이디</label>
+        <div className="w-full rounded-3xl border border-slate-200/60 bg-white/80 p-7 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.55)] backdrop-blur">
+          <h1 className="text-base font-semibold tracking-tight text-slate-900">회원가입</h1>
+          <p className="mt-1 text-sm leading-6 text-slate-600">필수 항목을 입력하고 가입 요청을 제출하세요.</p>
+
+          <form onSubmit={onSubmit} className="mt-6 space-y-4">
+            <div>
+              <label className="block text-xs font-semibold tracking-wide text-slate-700">아이디</label>
             <input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              className="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 placeholder:text-slate-400 shadow-sm focus:outline-none focus:ring-4 focus:ring-indigo-200"
               placeholder="4~20자 (영문/숫자/_)"
               autoComplete="username"
             />
@@ -156,23 +163,23 @@ export default function SignupPage() {
                 아이디는 4~20자, 영문/숫자/언더스코어(_)만 허용해요.
               </p>
             )}
-          </div>
+            </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700">이름</label>
+            <div>
+              <label className="block text-xs font-semibold tracking-wide text-slate-700">이름</label>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              className="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 placeholder:text-slate-400 shadow-sm focus:outline-none focus:ring-4 focus:ring-indigo-200"
               placeholder="표시할 이름 (1~50자)"
               autoComplete="name"
             />
             {name.length > 0 && !nameOk && <p className="mt-1 text-xs text-red-600">이름은 1~50자여야 해요.</p>}
-          </div>
+            </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700">소속 팀 (복수 선택 가능)</label>
-            <div className="mt-2 grid grid-cols-4 gap-1.5">
+            <div>
+              <label className="block text-xs font-semibold tracking-wide text-slate-700">소속 팀 (복수 선택 가능)</label>
+              <div className="mt-2 grid grid-cols-3 sm:grid-cols-4 gap-2">
               {departmentOptions.map((opt) => {
                 const checked = departments.includes(opt.value);
                 return (
@@ -181,8 +188,10 @@ export default function SignupPage() {
                     type="button"
                     onClick={() => toggleDepartment(opt.value)}
                     className={[
-                      "flex items-center justify-between rounded-lg border px-2 py-1.5 text-xs",
-                      checked ? "border-indigo-500 bg-indigo-50" : "border-gray-300 bg-white hover:bg-gray-50",
+                      "flex items-center justify-between rounded-2xl border px-3 py-2 text-xs transition",
+                      checked
+                        ? "border-indigo-300 bg-indigo-50 text-indigo-900 shadow-sm"
+                        : "border-slate-200 bg-white hover:bg-slate-50 text-slate-800",
                     ].join(" ")}
                     aria-pressed={checked}
                   >
@@ -190,82 +199,85 @@ export default function SignupPage() {
                     <span
                       className={[
                         "h-3.5 w-3.5 rounded border flex-shrink-0",
-                        checked ? "border-indigo-500 bg-indigo-600" : "border-gray-300 bg-white",
+                        checked ? "border-indigo-500 bg-indigo-600" : "border-slate-200 bg-white",
                       ].join(" ")}
                       aria-hidden="true"
                     />
                   </button>
                 );
               })}
+              </div>
+
+              <div className="mt-2 text-xs text-slate-500">
+                선택됨: <span className="text-slate-800">{selectedLabels}</span>
+              </div>
+
+              {!departmentsOk && <p className="mt-1 text-xs text-red-600">소속 팀은 최소 1개 선택해야 해요.</p>}
             </div>
 
-            <div className="mt-2 text-xs text-gray-500">
-              선택됨: <span className="text-gray-800">{selectedLabels}</span>
-            </div>
-
-            {!departmentsOk && <p className="mt-1 text-xs text-red-600">소속 팀은 최소 1개 선택해야 해요.</p>}
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">전화번호</label>
+            <div>
+              <label className="block text-xs font-semibold tracking-wide text-slate-700">전화번호</label>
             <input
               value={phoneNumber}
               onChange={(e) => setPhoneNumber(digitsOnly(e.target.value))}
               inputMode="numeric"
-              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              className="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 placeholder:text-slate-400 shadow-sm focus:outline-none focus:ring-4 focus:ring-indigo-200"
               placeholder="01012345678"
               autoComplete="tel"
             />
             {phoneNumber.length > 0 && !phoneOk && (
               <p className="mt-1 text-xs text-red-600">전화번호는 숫자만 입력하세요 (10~11자리).</p>
             )}
-            <p className="mt-1 text-xs text-gray-400">입력은 숫자만 가능해요. 저장도 숫자만 저장됩니다.</p>
-          </div>
+              <p className="mt-1 text-xs text-slate-400">입력은 숫자만 가능해요. 저장도 숫자만 저장됩니다.</p>
+            </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700">비밀번호</label>
+            <div>
+              <label className="block text-xs font-semibold tracking-wide text-slate-700">비밀번호</label>
             <input
               value={pw}
               onChange={(e) => setPw(e.target.value)}
               type="password"
-              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              className="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 placeholder:text-slate-400 shadow-sm focus:outline-none focus:ring-4 focus:ring-indigo-200"
               placeholder="최소 8자"
               autoComplete="new-password"
             />
             {pwTooShort && <p className="mt-1 text-xs text-red-600">비밀번호는 최소 8자 이상이어야 해요.</p>}
-          </div>
+            </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700">비밀번호 확인</label>
+            <div>
+              <label className="block text-xs font-semibold tracking-wide text-slate-700">비밀번호 확인</label>
             <input
               value={pw2}
               onChange={(e) => setPw2(e.target.value)}
               type="password"
-              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              className="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 placeholder:text-slate-400 shadow-sm focus:outline-none focus:ring-4 focus:ring-indigo-200"
               placeholder="한 번 더 입력"
               autoComplete="new-password"
             />
             {pwMismatch && <p className="mt-1 text-xs text-red-600">비밀번호가 서로 달라요.</p>}
+            </div>
+
+            {error && (
+              <div className="rounded-2xl border border-rose-200/60 bg-rose-50/70 px-4 py-3 text-sm text-rose-900">
+                {error}
+              </div>
+            )}
+
+            <button
+              disabled={!canSubmit || submitting}
+              className="h-11 w-full rounded-2xl bg-indigo-700 px-4 text-sm font-semibold text-white shadow-[0_14px_34px_-22px_rgba(15,11,152,0.85)] transition hover:bg-indigo-800 disabled:opacity-50"
+            >
+              {submitting ? "요청 중..." : "가입 요청"}
+            </button>
+          </form>
+
+          <div className="mt-5 text-sm">
+            <Link to="/login" className="text-slate-600 hover:text-slate-900">
+              로그인으로 돌아가기
+            </Link>
           </div>
-
-          {error && (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
-          )}
-
-          <button
-            disabled={!canSubmit || submitting}
-            className="w-full rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {submitting ? "요청 중..." : "가입 요청"}
-          </button>
-        </form>
-
-        <div className="mt-4 text-sm">
-          <Link to="/login" className="text-gray-600 hover:underline">
-            로그인으로 돌아가기
-          </Link>
-        </div>
       </div>
+    </div>
     </div>
   );
 }

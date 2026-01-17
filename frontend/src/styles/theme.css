@@ -1,20 +1,31 @@
 :root {
 --brand: #0F0B98; /* navy */
---text: #1f2937;
---muted: #6b7280;
+--brand-2: #1d4ed8; /* blue */
+--text: #0f172a; /* slate-900 */
+--muted: #64748b; /* slate-500 */
 --surface: #ffffff;
---line: #e5e7eb;
+--surface-2: rgba(255, 255, 255, 0.72);
+--bg: #f6f7fb;
+--line: rgba(15, 23, 42, 0.10);
+
+/* radius + shadow scale (luxury = softer corners + wider, lighter shadows) */
+--radius-card: 24px;
+--radius-control: 14px;
+--shadow-card: 0 18px 40px -26px rgba(15, 23, 42, 0.45);
+--shadow-float: 0 22px 55px -30px rgba(15, 23, 42, 0.55);
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans KR", sans-serif; color: var(--text); }
+body { background: var(--bg); }
 
 
 /* Top bar */
 .topbar {
 height: 56px; display: flex; align-items: center; gap: 16px;
-padding: 0 16px; background: var(--surface); border-bottom: 1px solid var(--line);
+padding: 0 16px; background: var(--surface-2); border-bottom: 1px solid var(--line);
+backdrop-filter: blur(10px);
 }
-.brand .logo { font-weight: 800; letter-spacing: 1px; text-decoration: none; color: var(--brand); }
+.brand .logo { font-weight: 800; letter-spacing: 0.08em; text-decoration: none; color: var(--brand); }
 .grow { flex: 1; }
 .breadcrumb { font-size: 14px; color: var(--muted); }
 .breadcrumb a { color: var(--muted); text-decoration: none; }
@@ -24,21 +35,62 @@ padding: 0 16px; background: var(--surface); border-bottom: 1px solid var(--line
 
 /* Shell */
 .app-shell { display: grid; grid-template-rows: 56px 1fr; height: 100%; }
-.app-body { display: grid; grid-template-columns: 240px 1fr; min-height: 0; }
-.sidebar { border-right: 1px solid var(--line); padding: 16px; }
+/* NOTE: layout mechanics (sidebar slide) live in styles/sidebartoggle.css */
+.sidebar { padding: 16px; }
 .side-title { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; margin-bottom: 8px; }
 .side-nav { display: grid; gap: 6px; }
-.side-link { padding: 10px 12px; border-radius: 10px; text-decoration: none; color: var(--text); }
-.side-link.active, .side-link:hover { background: #f3f4f6; }
-.main { padding: 20px; overflow: auto; }
+.side-link { 
+  padding: 10px 12px; 
+  border-radius: 12px; 
+  text-decoration: none; 
+  color: rgba(15, 23, 42, 0.92); 
+  transition: background 120ms ease, color 120ms ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.side-link:hover { background: rgba(15, 23, 42, 0.04); }
+.side-link.active {
+  background: linear-gradient(90deg, rgba(15, 11, 152, 0.10), rgba(15, 11, 152, 0.04));
+  box-shadow: inset 0 0 0 1px rgba(15, 11, 152, 0.10);
+  color: var(--brand);
+}
+.side-link-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.side-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(15, 23, 42, 0.75);
+  margin-top: 12px;
+  margin-bottom: 4px;
+  padding: 8px 12px 4px 12px;
+  text-transform: none;
+}
+.side-link-sub {
+  padding-left: 32px;
+  font-size: 13px;
+  color: rgba(15, 23, 42, 0.80);
+}
+.side-link-sub.active {
+  color: var(--brand);
+}
+.main {
+  padding: 20px;
+  /* prevent page-level horizontal scroll; tables should scroll inside their own box */
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 
 
 /* Cards */
-.card { border: 1px solid var(--line); border-radius: 14px; padding: 16px; background: var(--surface); }
+.card { border: 1px solid var(--line); border-radius: var(--radius-card); padding: 16px; background: var(--surface); box-shadow: var(--shadow-card); }
 .card-title { font-weight: 700; margin: 0 0 8px; }
 .card-sub { margin: 0 0 16px; color: var(--muted); }
-.btn { appearance: none; border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 8px 12px; cursor: pointer; }
-.btn.primary { background: var(--brand); color: white; border-color: var(--brand); }
-.input { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; width: 100%; }
+.btn { appearance: none; border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius-control); padding: 10px 14px; cursor: pointer; }
+.btn.primary { background: var(--brand); color: white; border-color: rgba(15, 11, 152, 0.35); box-shadow: 0 10px 24px -16px rgba(15, 11, 152, 0.75); }
+.input { border: 1px solid var(--line); border-radius: var(--radius-control); padding: 10px 12px; width: 100%; }
 .grid { display: grid; gap: 12px; }
 

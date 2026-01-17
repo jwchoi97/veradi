@@ -3,7 +3,11 @@ import { Navigate, Outlet, useLocation, Link } from "react-router-dom";
 
 import AppLayout from "@/layout/AppLayout";
 import MockUploadPage from "@/pages/MockUploadPage";
-import ProjectAdminPage from "@/pages/ProjectAdminPage";
+import IndividualItemUploadPage from "@/pages/IndividualItemUploadPage";
+import AdminDashboardPage from "@/pages/AdminDashboardPage";
+import ProjectManagementPage from "@/pages/ProjectManagementPage";
+import UserManagementPage from "@/pages/UserManagementPage";
+import MyPage from "@/pages/MyPage";
 import LoginPage from "@/pages/LoginPage";
 import HomePage from "@/pages/HomePage";
 import SignupPage from "@/pages/SignupPage";
@@ -19,18 +23,43 @@ export type RouteModule = {
 // --- Module: ERP / content / mock ---
 export const contentMockModule: RouteModule = {
   base: "/erp/content/mock",
-  label: "모의고사 업로드",
+  label: "콘텐츠 업로드",
   routes: [{ index: true, element: <MockUploadPage /> }],
 };
 
-// --- Module: ERP / Admin ---
-export const adminProjectModule: RouteModule = {
-  base: "/erp/admin",
-  label: "관리자 페이지",
-  routes: [{ index: true, element: <ProjectAdminPage /> }],
+// --- Module: ERP / content / individual ---
+export const contentIndividualModule: RouteModule = {
+  base: "/erp/content/individual",
+  label: "개별 문항 업로드",
+  routes: [{ index: true, element: <IndividualItemUploadPage /> }],
 };
 
-export const ROUTE_MODULES: RouteModule[] = [contentMockModule, adminProjectModule];
+// --- Module: ERP / Admin ---
+export const adminDashboardModule: RouteModule = {
+  base: "/erp/admin",
+  label: "관리자 페이지",
+  routes: [{ index: true, element: <Navigate to="/home" replace /> }],
+};
+
+export const adminProjectModule: RouteModule = {
+  base: "/erp/admin/projects",
+  label: "프로젝트 관리",
+  routes: [{ index: true, element: <ProjectManagementPage /> }],
+};
+
+export const adminUserModule: RouteModule = {
+  base: "/erp/admin/users",
+  label: "유저 관리",
+  routes: [{ index: true, element: <UserManagementPage /> }],
+};
+
+export const ROUTE_MODULES: RouteModule[] = [
+  contentMockModule,
+  contentIndividualModule,
+  adminDashboardModule,
+  adminProjectModule,
+  adminUserModule,
+];
 
 function RequireAuth() {
   const location = useLocation();
@@ -86,12 +115,13 @@ export function buildRoutes(): RouteObject[] {
     {
       path: "/",
       element: <AppLayout />,
-      children: [
-        { index: true, element: <IndexRedirect /> },
-        {
-          element: <RequireAuth />,
           children: [
-            { path: "home", element: <HomePage /> },
+            { index: true, element: <IndexRedirect /> },
+            {
+              element: <RequireAuth />,
+              children: [
+                { path: "home", element: <HomePage /> },
+                { path: "me", element: <MyPage /> },
 
             ...nonAdminModules.map((m) => ({
               path: m.base,

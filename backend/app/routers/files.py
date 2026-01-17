@@ -1,4 +1,3 @@
-# routers/files.py
 from __future__ import annotations
 
 import io
@@ -7,14 +6,16 @@ import urllib.request
 import zipfile
 from typing import Dict, List, Tuple
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Body
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Body, Header
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from ..authz import ensure_can_manage_project
 from ..mariadb.database import SessionLocal
-from ..mariadb.models import Project, FileAsset
+from ..mariadb.models import Project, FileAsset, Activity
 from ..minio.service import upload_stream, presign_download_url, delete_object
 from ..utils.storage_naming import build_project_slug, build_file_key
+from .auth import get_current_user
 
 router = APIRouter(prefix="/projects", tags=["files"])
 
@@ -46,7 +47,8 @@ def _project_folder_base(p: Project) -> str:
 
 
 def _download_presigned_bytes(url: str) -> bytes:
-    with urllib.request.urlopen(url) as resp:
+    # timeout: avoid hanging the API worker on slow/bad storage URL
+    with urllib.request.urlopen(url, timeout=15) as resp:
         return resp.read()
 
 
@@ -76,10 +78,16 @@ def _build_unique_project_folder_map(projects: List[Project]) -> Dict[int, str]:
 def bulk_download_files_zip(
     payload: dict = Body(...),
     db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
 ):
+    user = get_current_user(db, x_user_id)
+
     file_ids = payload.get("file_ids")
     if not isinstance(file_ids, list) or not file_ids:
         raise HTTPException(status_code=400, detail="file_ids is required")
+    # keep UX: allow reasonable batches, but block abuse
+    if len(file_ids) > 200:
+        raise HTTPException(status_code=413, detail="Too many files (max 200)")
 
     assets: List[FileAsset] = db.query(FileAsset).filter(FileAsset.id.in_(file_ids)).all()
     if not assets:
@@ -93,6 +101,10 @@ def bulk_download_files_zip(
     project_ids = sorted({a.project_id for a in ordered_assets})
     projects: List[Project] = db.query(Project).filter(Project.id.in_(project_ids)).all()
     project_by_id = {p.id: p for p in projects}
+
+    # ✅ AuthZ: must be able to manage each involved project
+    for p in projects:
+        ensure_can_manage_project(user, p)
 
     # Build unique folder names per project (dedup by base name, suffix by id order)
     folder_by_pid = _build_unique_project_folder_map(projects)
@@ -157,10 +169,15 @@ async def upload_project_file(
     file: UploadFile = File(...),
     file_type: str = Form(...),
     db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
 ):
+    user = get_current_user(db, x_user_id)
+
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    ensure_can_manage_project(user, project)
 
     if not getattr(project, "slug", None):
         project.slug = build_project_slug(
@@ -201,19 +218,42 @@ async def upload_project_file(
         mime_type=file.content_type,
         size=None,
         file_type=file_type,
+        uploaded_by_user_id=user.id,  # 누가 업로드했는지 기록
     )
     db.add(asset)
     db.commit()
     db.refresh(asset)
 
+    # Activity 레코드 생성 (업로드)
+    file_type_label = file_type or "파일"
+    description = f"{original_name} ({file_type_label})"
+    activity = Activity(
+        activity_type="file_upload",
+        project_id=project_id,
+        file_asset_id=asset.id,
+        user_id=user.id,
+        file_name=original_name,
+        file_type=file_type,
+        description=description,
+    )
+    db.add(activity)
+    db.commit()
+
     return {"id": asset.id, "file_key": asset.file_key, "original_name": asset.original_name}
 
 
 @router.get("/{project_id}/files")
-def list_project_files(project_id: int, db: Session = Depends(get_db)):
+def list_project_files(
+    project_id: int,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    user = get_current_user(db, x_user_id)
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    ensure_can_manage_project(user, project)
 
     return (
         db.query(FileAsset)
@@ -224,7 +264,19 @@ def list_project_files(project_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{project_id}/files/{file_id}/download")
-def download_project_file(project_id: int, file_id: int, db: Session = Depends(get_db)):
+def download_project_file(
+    project_id: int,
+    file_id: int,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    user = get_current_user(db, x_user_id)
+
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    ensure_can_manage_project(user, project)
+
     asset = (
         db.query(FileAsset)
         .filter(FileAsset.id == file_id, FileAsset.project_id == project_id)
@@ -251,7 +303,14 @@ def delete_project_file(
     project_id: int,
     file_id: int,
     db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
 ):
+    user = get_current_user(db, x_user_id)
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    ensure_can_manage_project(user, project)
+
     asset = (
         db.query(FileAsset)
         .filter(FileAsset.id == file_id, FileAsset.project_id == project_id)
@@ -260,9 +319,24 @@ def delete_project_file(
     if not asset:
         raise HTTPException(status_code=404, detail="File not found")
 
+    # Activity 레코드 생성 (삭제 전에 기록)
+    file_type_label = asset.file_type or "파일"
+    description = f"{asset.original_name} ({file_type_label})"
+    activity = Activity(
+        activity_type="file_delete",
+        project_id=project_id,
+        file_asset_id=asset.id,  # 삭제 전이므로 참조 가능
+        user_id=user.id,
+        file_name=asset.original_name,
+        file_type=asset.file_type,
+        description=description,
+    )
+    db.add(activity)
+
     try:
         delete_object(object_key=asset.file_key)
     except RuntimeError as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
     db.delete(asset)

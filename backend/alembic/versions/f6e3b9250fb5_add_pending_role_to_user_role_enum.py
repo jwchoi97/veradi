@@ -20,9 +20,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
+    # Empty migration - no changes needed
     pass
 
 
 def downgrade() -> None:
     """Downgrade schema."""
+    # Empty migration - no changes needed
     pass

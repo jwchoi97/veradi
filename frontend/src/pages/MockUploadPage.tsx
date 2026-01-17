@@ -1,7 +1,7 @@
-// FILE: frontend/src/pages/MockUploadPage.tsx
 import React, { useMemo, useState, useEffect } from "react";
 import { Upload, Download, Trash2, Loader2 } from "lucide-react";
 import { getFileDownloadUrl } from "../data/files/api";
+import { getAuthedUser } from "@/auth";
 import {
   fetchProjects,
   getProjectFiles,
@@ -171,12 +171,17 @@ export default function MockUploadPage() {
     if (bulkBusy) return;
 
     const fileIds = getAllSelectedPairs.map((x) => x.file.id);
+    const me = getAuthedUser();
+    const uid = me?.id;
 
     setIsBulkDownloading(true);
     try {
       const res = await fetch(`${getBaseUrl()}/projects/files/bulk-download`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(typeof uid === "number" && Number.isFinite(uid) ? { "X-User-Id": String(uid) } : {}),
+        },
         body: JSON.stringify({ file_ids: fileIds }),
         credentials: "include",
       });
@@ -487,11 +492,14 @@ export default function MockUploadPage() {
     const filesLoading = !!filesLoadingMap[p.id];
     const projectFiles = projectFilesMap[p.id] ?? [];
 
+    // ✅ 개별문항 파일은 모의고사 업로드 페이지에서 제외
+    const filteredFiles = projectFiles.filter((f) => (f.file_type ?? "").trim() !== "개별문항");
+
     const grouped = new Map<string, FileAsset[]>();
     for (const t of fileTypeOptions) grouped.set(t, []);
 
     const unknown: FileAsset[] = [];
-    for (const f of projectFiles) {
+    for (const f of filteredFiles) {
       const t = (f.file_type ?? "").trim();
       if (t && grouped.has(t)) grouped.get(t)!.push(f);
       else unknown.push(f);
@@ -589,7 +597,7 @@ export default function MockUploadPage() {
   return (
     <div className="w-full min-h-[calc(100vh-64px)] px-4 md:px-6 py-4 text-gray-900 space-y-4">
       <div className="flex items-start justify-between gap-3">
-        <h1 className="text-2xl font-bold tracking-tight">모의고사 업로드</h1>
+        <h1 className="text-2xl font-bold tracking-tight">콘텐츠 업로드</h1>
 
         {/* ✅ Global bulk actions (outside table) */}
         <div className="flex items-center gap-2">

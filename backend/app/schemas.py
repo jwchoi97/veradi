@@ -1,5 +1,3 @@
-# FILE: backend/app/schemas.py
-
 from __future__ import annotations
 
 from datetime import datetime
@@ -32,6 +30,7 @@ class FileOut(BaseModel):
     size: Optional[int] = None
     created_at: datetime
     file_type: Optional[str] = None
+    uploaded_by_user_id: Optional[int] = None  # 누가 업로드했는지 기록
 
     class Config:
         from_attributes = True
@@ -60,6 +59,9 @@ class ProjectBase(BaseModel):
 
     year: Optional[ProjectYearStr] = None
 
+    # 개별 문항 목표 개수 (기본값 20)
+    target_individual_items_count: Optional[int] = 20
+
 
 class ProjectCreate(ProjectBase):
     status: Optional[str] = "OPEN"
@@ -80,6 +82,9 @@ class ProjectUpdate(BaseModel):
     status: Optional[str] = None
     year: Optional[ProjectYearStr] = None
 
+    # 개별 문항 목표 개수
+    target_individual_items_count: Optional[int] = None
+
 
 class ProjectOut(ProjectBase):
     id: int
@@ -87,6 +92,7 @@ class ProjectOut(ProjectBase):
     created_at: datetime
     updated_at: datetime
     files: List[FileOut] = Field(default_factory=list)
+    target_individual_items_count: int  # ProjectBase에서 상속되지만 명시적으로 포함
 
     class Config:
         from_attributes = True
@@ -165,6 +171,34 @@ class UserOut(BaseModel):
 
     phone_number: Optional[str] = None
     phone_verified: bool
+    profile_image_url: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=50)
+    phone_number: Optional[str] = Field(None, min_length=8, max_length=32)
+
+
+class UserContributionStats(BaseModel):
+    year: str
+    individual_items_count: int  # 개별 문항 업로드 개수
+    content_files_count: int  # 콘텐츠 업로드 개수 (문제지, 해설지, 정오표 등)
+    total_files_count: int  # 전체 파일 개수
+
+
+class ActivityItem(BaseModel):
+    id: int
+    type: str  # "file_upload", "file_delete", "review" (나중에 추가)
+    timestamp: datetime
+    user_name: str | None
+    project_name: str
+    project_year: str | None
+    file_name: str | None
+    file_type: str | None
+    description: str  # 간결한 설명
 
     class Config:
         from_attributes = True
