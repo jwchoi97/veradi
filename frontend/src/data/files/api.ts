@@ -256,6 +256,117 @@ export async function getRecentActivities(limit: number = 10): Promise<ActivityI
   return res.data;
 }
 
+///////////////
+// REVIEW API //
+///////////////
+
+export interface ReviewComment {
+  id: number;
+  review_id: number;
+  author_id: number | null;
+  author_name: string | null;
+  comment_type: "text" | "handwriting";
+  text_content: string | null;
+  handwriting_image_url: string | null;
+  page_number: number | null;
+  x_position: number | null;
+  y_position: number | null;
+  created_at: string;
+}
+
+export interface Review {
+  id: number;
+  file_asset_id: number;
+  project_id: number | null;
+  file_name: string | null;
+  project_name: string | null;
+  project_year: string | null;
+  status: "pending" | "in_progress" | "request_revision" | "approved";
+  reviewer_id: number | null;
+  reviewer_name: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  comments: ReviewComment[];
+}
+
+export interface ReviewCommentCreate {
+  comment_type: "text" | "handwriting";
+  text_content?: string | null;
+  handwriting_image_url?: string | null;
+  page_number?: number | null;
+  x_position?: number | null;
+  y_position?: number | null;
+}
+
+export interface ReviewStatusUpdate {
+  status: "in_progress" | "request_revision" | "approved";
+}
+
+export async function getFileReview(fileId: number): Promise<Review> {
+  const res = await api.get<Review>(`/reviews/files/${fileId}`);
+  return res.data;
+}
+
+export async function listContentFilesForReview(projectId?: number, status?: string): Promise<Review[]> {
+  const params: any = {};
+  if (projectId) params.project_id = projectId;
+  if (status) params.status = status;
+  const res = await api.get<Review[]>("/reviews/content-files", { params });
+  return res.data;
+}
+
+export async function startReview(fileId: number): Promise<Review> {
+  const res = await api.post<Review>(`/reviews/files/${fileId}/start`);
+  return res.data;
+}
+
+export async function addReviewComment(fileId: number, comment: ReviewCommentCreate): Promise<ReviewComment> {
+  const res = await api.post<ReviewComment>(`/reviews/files/${fileId}/comments`, comment);
+  return res.data;
+}
+
+export async function uploadHandwritingImage(
+  fileId: number,
+  file: File,
+  pageNumber?: number,
+  xPosition?: number,
+  yPosition?: number
+): Promise<{ handwriting_image_url: string; page_number?: number; x_position?: number; y_position?: number }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (pageNumber !== undefined) formData.append("page_number", pageNumber.toString());
+  if (xPosition !== undefined) formData.append("x_position", xPosition.toString());
+  if (yPosition !== undefined) formData.append("y_position", yPosition.toString());
+
+  const res = await api.post<{ handwriting_image_url: string; page_number?: number; x_position?: number; y_position?: number }>(
+    `/reviews/files/${fileId}/handwriting`,
+    formData,
+    {
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
+    }
+  );
+  return res.data;
+}
+
+export async function stopReview(fileId: number): Promise<Review> {
+  const res = await api.post<Review>(`/reviews/files/${fileId}/stop`);
+  return res.data;
+}
+
+export async function getFileViewUrl(fileId: number): Promise<{ url: string; expires_minutes: number }> {
+  const res = await api.get<{ url: string; expires_minutes: number }>(`/reviews/files/${fileId}/view-url`);
+  return res.data;
+}
+
+export async function updateReviewStatus(fileId: number, status: ReviewStatusUpdate): Promise<Review> {
+  const res = await api.patch<Review>(`/reviews/files/${fileId}/status`, status);
+  return res.data;
+}
+
 
 // // FILE: frontend/src/data/files/api.ts
 

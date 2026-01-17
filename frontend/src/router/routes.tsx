@@ -11,6 +11,7 @@ import MyPage from "@/pages/MyPage";
 import LoginPage from "@/pages/LoginPage";
 import HomePage from "@/pages/HomePage";
 import SignupPage from "@/pages/SignupPage";
+import ReviewPage from "@/pages/ReviewPage";
 
 import { isAuthed } from "@/auth";
 
@@ -122,6 +123,7 @@ export function buildRoutes(): RouteObject[] {
               children: [
                 { path: "home", element: <HomePage /> },
                 { path: "me", element: <MyPage /> },
+                { path: "reviews", element: <ReviewPage /> },
 
             ...nonAdminModules.map((m) => ({
               path: m.base,

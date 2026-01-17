@@ -79,12 +79,15 @@ def presign_download_url(
     expires_minutes: int = 10,
     download_filename: Optional[str] = None,
     content_type: Optional[str] = None,
+    inline: bool = False,
 ) -> str:
     """
     Create a short-lived download URL (client downloads directly from MinIO).
 
     If download_filename is provided, the browser will save the file using that name
     (Content-Disposition override via response headers).
+    
+    If inline=True, sets Content-Disposition to inline (for PDF viewers).
     """
     ensure_bucket(bucket)
     try:
@@ -93,8 +96,9 @@ def presign_download_url(
         if download_filename:
             # RFC 5987 filename* (UTF-8), safe for Korean/space chars
             quoted = quote(download_filename)
+            disposition = "inline" if inline else "attachment"
             response_headers["response-content-disposition"] = (
-                f"attachment; filename*=UTF-8''{quoted}"
+                f"{disposition}; filename*=UTF-8''{quoted}"
             )
 
         if content_type:

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Outlet, NavLink, useLocation } from "react-router-dom";
-import { UploadCloud, FileText, FolderKanban, Users, User, Home } from "lucide-react";
+import { UploadCloud, FileText, FolderKanban, Users, User, Home, CheckCircle } from "lucide-react";
 import TopBar from "./TopBar";
 import { ROUTE_MODULES } from "@/router/routes";
 import { getAuthedUser } from "@/auth";
@@ -103,7 +103,7 @@ export default function AppLayout() {
               마이 페이지
             </NavLink>
 
-            <div className="side-group-title">업로드</div>
+            <div className="side-group-title">콘텐츠 페이지</div>
             <NavLink
               to="/erp/content/mock"
               className={({ isActive }: NavState) =>
@@ -125,6 +125,17 @@ export default function AppLayout() {
                 <FileText className="h-4 w-4" />
               </span>
               개별 문항 업로드
+            </NavLink>
+            <NavLink
+              to="/reviews"
+              className={({ isActive }: NavState) =>
+                `side-link side-link-sub ${isActive ? "active" : ""}`
+              }
+            >
+              <span className="side-link-icon">
+                <CheckCircle className="h-4 w-4" />
+              </span>
+              콘텐츠 검토
             </NavLink>
 
             {canSeeAdmin && (

@@ -214,6 +214,90 @@ class Activity(Base):
     user = relationship("User", foreign_keys=[user_id])
 
 
+class Review(Base):
+    __tablename__ = "reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # 검토 대상 파일
+    file_asset_id = Column(
+        Integer,
+        ForeignKey("files.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        unique=True,  # 파일당 하나의 검토만
+    )
+
+    # 검토 상태: "pending", "in_progress", "request_revision", "approved"
+    status = Column(String(32), nullable=False, default="pending", index=True)
+
+    # 검토자
+    reviewer_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # 검토 시작 시각
+    started_at = Column(DateTime, nullable=True)
+
+    # 검토 완료 시각
+    completed_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    file_asset = relationship("FileAsset", foreign_keys=[file_asset_id])
+    reviewer = relationship("User", foreign_keys=[reviewer_id])
+    comments = relationship("ReviewComment", back_populates="review", cascade="all, delete-orphan")
+
+
+class ReviewComment(Base):
+    __tablename__ = "review_comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # 검토
+    review_id = Column(
+        Integer,
+        ForeignKey("reviews.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # 코멘트 작성자
+    author_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # 코멘트 타입: "text", "handwriting" (손글씨 이미지)
+    comment_type = Column(String(32), nullable=False, default="text")
+
+    # 텍스트 코멘트 내용
+    text_content = Column(Text, nullable=True)
+
+    # 손글씨 이미지 URL (MinIO에 저장)
+    handwriting_image_url = Column(String(512), nullable=True)
+
+    # 페이지 번호 (PDF의 경우)
+    page_number = Column(Integer, nullable=True)
+
+    # X, Y 좌표 (페이지 내 위치)
+    x_position = Column(Integer, nullable=True)
+    y_position = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    # Relationships
+    review = relationship("Review", back_populates="comments")
+    author = relationship("User", foreign_keys=[author_id])
+
+
 # --------------------
 # Signup Request (legacy table)
 # --------------------

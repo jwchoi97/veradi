@@ -204,6 +204,56 @@ class ActivityItem(BaseModel):
         from_attributes = True
 
 
+class ReviewCommentOut(BaseModel):
+    id: int
+    review_id: int
+    author_id: int | None
+    author_name: str | None
+    comment_type: str  # "text" or "handwriting"
+    text_content: str | None
+    handwriting_image_url: str | None
+    page_number: int | None
+    x_position: int | None
+    y_position: int | None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ReviewCommentCreate(BaseModel):
+    comment_type: str = "text"  # "text" or "handwriting"
+    text_content: str | None = None
+    handwriting_image_url: str | None = None
+    page_number: int | None = None
+    x_position: int | None = None
+    y_position: int | None = None
+
+
+class ReviewOut(BaseModel):
+    id: int
+    file_asset_id: int
+    project_id: int | None = None
+    file_name: str | None = None
+    project_name: str | None = None
+    project_year: str | None = None
+    status: str  # "pending", "in_progress", "request_revision", "approved"
+    reviewer_id: int | None
+    reviewer_name: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    comments: list[ReviewCommentOut] = []
+
+    class Config:
+        from_attributes = True
+
+
+class ReviewStatusUpdate(BaseModel):
+    status: str  # "in_progress", "request_revision", "approved"
+
+
 class PendingUserOut(BaseModel):
     id: int
     username: str
