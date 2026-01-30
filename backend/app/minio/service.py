@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Optional, Iterable
 from urllib.parse import quote
 import uuid
+import json
+import io
 
 from minio.error import S3Error
 
@@ -191,6 +193,59 @@ def delete_project_files_by_keys(
     based on object_key list fetched from DB.
     """
     return delete_objects(object_keys=object_keys, bucket=bucket, ignore_missing=ignore_missing)
+
+
+def upload_json(
+    *,
+    object_key: str,
+    data: dict,
+    bucket: str = DEFAULT_BUCKET,
+) -> UploadResult:
+    """
+    Upload JSON data to MinIO as a JSON file.
+    """
+    ensure_bucket(bucket)
+    json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    fileobj = io.BytesIO(json_bytes)
+    
+    try:
+        result = minio_client.put_object(
+            bucket_name=bucket,
+            object_name=object_key,
+            data=fileobj,
+            length=len(json_bytes),
+            content_type="application/json",
+        )
+        return UploadResult(
+            bucket=bucket,
+            object_key=object_key,
+            etag=result.etag,
+            version_id=result.version_id,
+        )
+    except S3Error as e:
+        raise RuntimeError(f"MinIO upload JSON failed: {e.code} {e.message}") from e
+
+
+def get_json(
+    *,
+    object_key: str,
+    bucket: str = DEFAULT_BUCKET,
+) -> dict:
+    """
+    Get JSON data from MinIO.
+    Returns empty dict if object doesn't exist.
+    """
+    ensure_bucket(bucket)
+    try:
+        response = minio_client.get_object(bucket_name=bucket, object_name=object_key)
+        data = json.loads(response.read().decode("utf-8"))
+        response.close()
+        response.release_conn()
+        return data
+    except S3Error as e:
+        if e.code in ("NoSuchKey", "NoSuchObject"):
+            return {}
+        raise RuntimeError(f"MinIO get JSON failed: {e.code} {e.message}") from e
 
 # # minio/service.py
 # from __future__ import annotations

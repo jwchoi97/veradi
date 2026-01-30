@@ -1,6 +1,5 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { Upload, Download, Trash2, Loader2 } from "lucide-react";
-import { getFileDownloadUrl } from "../data/files/api";
 import { getAuthedUser } from "@/auth";
 import {
   fetchProjects,
@@ -9,6 +8,9 @@ import {
   Project,
   FileAsset,
   deleteProjectFile,
+  getFileDownloadUrl,
+  listContentFilesForReview,
+  type Review,
 } from "../data/files/api";
 
 import ProjectListTable from "@/components/projects/ProjectListTable";
@@ -59,6 +61,32 @@ function pickLatestByExt(files: FileAsset[], ext: "pdf" | "hwp"): FileAsset | nu
   return filtered[0];
 }
 
+function getReviewStatusLabel(status?: string | null) {
+  switch (status) {
+    case "approved":
+      return "검토완료";
+    case "request_revision":
+      return "수정요청";
+    case "in_progress":
+      return "검토중";
+    default:
+      return "대기중";
+  }
+}
+
+function getReviewStatusBadgeClass(status?: string | null) {
+  switch (status) {
+    case "approved":
+      return "bg-green-100 text-green-800";
+    case "request_revision":
+      return "bg-red-100 text-red-800";
+    case "in_progress":
+      return "bg-yellow-100 text-yellow-800";
+    default:
+      return "bg-gray-100 text-gray-700";
+  }
+}
+
 function getBaseUrl(): string {
   const baseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
   if (!baseUrl) throw new Error("VITE_API_BASE_URL is not set");
@@ -100,6 +128,9 @@ export default function MockUploadPage() {
 
   const [projectFilesMap, setProjectFilesMap] = useState<Record<number, FileAsset[]>>({});
   const [filesLoadingMap, setFilesLoadingMap] = useState<Record<number, boolean>>({});
+
+  // ✅ file_asset_id -> review status (pending/in_progress/request_revision/approved)
+  const [reviewStatusByFileId, setReviewStatusByFileId] = useState<Record<number, string>>({});
 
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [modalProject, setModalProject] = useState<Project | null>(null);
@@ -223,6 +254,7 @@ export default function MockUploadPage() {
       // reload expanded projects (so UI stays consistent)
       const expanded = Array.from(expandedProjectIds);
       await Promise.all(expanded.map((pid) => loadProjectFiles(pid)));
+      await refreshReviewStatuses();
 
       clearAllSelection();
     } catch (e) {
@@ -251,6 +283,20 @@ export default function MockUploadPage() {
   }, [isUploadModalOpen]);
 
   /* ---------- data load ---------- */
+  const refreshReviewStatuses = async () => {
+    try {
+      const data: Review[] = await listContentFilesForReview();
+      const next: Record<number, string> = {};
+      for (const r of data) {
+        if (typeof r.file_asset_id === "number") next[r.file_asset_id] = r.status;
+      }
+      setReviewStatusByFileId(next);
+    } catch (e) {
+      // If user lacks permission or endpoint fails, keep UI usable without status.
+      console.warn("Failed to load review statuses", e);
+    }
+  };
+
   const loadProjects = async () => {
     try {
       setListLoading(true);
@@ -289,6 +335,7 @@ export default function MockUploadPage() {
 
   useEffect(() => {
     void loadProjects();
+    void refreshReviewStatuses();
   }, []);
 
   const handleToggleExpand = (p: Project) => {
@@ -408,6 +455,7 @@ export default function MockUploadPage() {
       });
 
       setUploadSuccess("삭제 완료");
+      await refreshReviewStatuses();
     } catch {
       reject("파일 삭제에 실패했습니다.");
     }
@@ -463,6 +511,7 @@ export default function MockUploadPage() {
       setUploadSuccess("업로드 성공!");
 
       const files = await loadProjectFiles(modalProject.id);
+      await refreshReviewStatuses();
 
       const nextSlots: Record<string, SlotPairState> = {};
       for (const t of fileTypeOptions) {
@@ -518,6 +567,7 @@ export default function MockUploadPage() {
           <tr>
             <th className="px-3 py-2 text-left w-28">파일 타입</th>
             <th className="px-3 py-2 text-left">파일명</th>
+            <th className="px-3 py-2 text-left w-24">검토상태</th>
             <th className="px-3 py-2 text-left w-20">확장자</th>
             <th className="px-3 py-2 text-left w-28">업로드일</th>
             <th className="px-3 py-2 text-right w-36 whitespace-nowrap">선택</th>
@@ -562,6 +612,23 @@ export default function MockUploadPage() {
 
                   <td className={cellTight}>
                     {isPlaceholder ? <span className="text-gray-300"> </span> : f.original_name}
+                  </td>
+
+                  <td className={`${cellTight} w-24`}>
+                    {isPlaceholder ? (
+                      ""
+                    ) : (
+                      <span
+                        className={[
+                          "inline-flex items-center rounded-full px-2 py-0.5",
+                          "text-[11px] font-semibold",
+                          getReviewStatusBadgeClass(reviewStatusByFileId[f.id]),
+                        ].join(" ")}
+                        title="콘텐츠 검토 상태"
+                      >
+                        {getReviewStatusLabel(reviewStatusByFileId[f.id])}
+                      </span>
+                    )}
                   </td>
 
                   <td className={`${cellTight} text-gray-700 w-20`}>

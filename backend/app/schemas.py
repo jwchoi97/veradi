@@ -230,6 +230,10 @@ class ReviewCommentCreate(BaseModel):
     y_position: int | None = None
 
 
+class ReviewCommentUpdate(BaseModel):
+    text_content: str | None = None
+
+
 class ReviewOut(BaseModel):
     id: int
     file_asset_id: int
@@ -252,6 +256,29 @@ class ReviewOut(BaseModel):
 
 class ReviewStatusUpdate(BaseModel):
     status: str  # "in_progress", "request_revision", "approved"
+
+
+class PDFAnnotation(BaseModel):
+    id: str
+    page: int
+    x: float
+    y: float
+    text: str
+    author_id: int | None = None
+    author_name: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class PDFAnnotationsData(BaseModel):
+    annotations: list[PDFAnnotation]
+
+
+class PDFAnnotationCreate(BaseModel):
+    page: int
+    x: float
+    y: float
+    text: str
 
 
 class PendingUserOut(BaseModel):

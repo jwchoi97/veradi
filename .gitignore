@@ -2,6 +2,8 @@ backend/.env
 backend/.env.*
 backend/scripts
 frontend/.env
+frontend/*.tsbuildinfo
+frontend/node_modules/.tmp/
 __pycache__/
 *.pyc
 bootstrap_admin.ps1

@@ -119,41 +119,22 @@ export async function deleteProject(id: number): Promise<void> {
 }
 
 export async function fetchProjects(): Promise<Project[]> {
-  const res = await api.get<Project[]>("/projects");
+  const res = await api.get<Project[]>("/projects/");
   return res.data;
 }
 
 export async function createProject(data: CreateProjectRequest): Promise<Project> {
-  const res = await api.post<Project>("/projects", data);
+  const res = await api.post<Project>("/projects/", data);
   return res.data;
 }
 
-export async function updateProject(projectId: number, data: UpdateProjectRequest): Promise<Project> {
-  const res = await api.patch<Project>(`/projects/${projectId}`, data);
+export async function updateProject(id: number, data: UpdateProjectRequest): Promise<Project> {
+  const res = await api.put<Project>(`/projects/${id}`, data);
   return res.data;
 }
-
-///// File Asset API //////
 
 export async function getProjectFiles(projectId: number): Promise<FileAsset[]> {
   const res = await api.get<FileAsset[]>(`/projects/${projectId}/files`);
-  return res.data;
-}
-
-export async function uploadProjectFile(
-  projectId: number,
-  file: File,
-  fileType: string
-): Promise<{ id: number; file_key: string }> {
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("file_type", fileType);
-
-  const res = await api.post<{ id: number; file_key: string }>(`/projects/${projectId}/files`, formData, {
-    headers: {
-      "Content-Type": "multipart/form-data",
-    },
-  });
   return res.data;
 }
 
@@ -161,111 +142,23 @@ export async function deleteProjectFile(projectId: number, fileId: number): Prom
   await api.delete(`/projects/${projectId}/files/${fileId}`);
 }
 
-export async function getFileDownloadUrl(projectId: number, fileId: number) {
-  const res = await api.get<{ id: number; url: string; expires_minutes: number }>(
-    `/projects/${projectId}/files/${fileId}/download`
-  );
-  return res.data;
-}
-
-export async function getProjectIndividualItemsCount(projectId: number): Promise<{ project_id: number; individual_items_count: number }> {
-  const res = await api.get<{ project_id: number; individual_items_count: number }>(
-    `/projects/${projectId}/individual-items/count`
-  );
-  return res.data;
-}
-
-///////////////
-// USER API //
-///////////////
-
-export interface UserInfo {
-  id: number;
-  username: string;
-  name: string | null;
-  role: string;
-  department: string;
-  departments: string[];
-  phone_number: string | null;
-  phone_verified: boolean;
-  profile_image_url: string | null;
-}
-
-export interface UserUpdateRequest {
-  name?: string;
-  phone_number?: string;
-}
-
-export interface ContributionStats {
-  year: string;
-  individual_items_count: number;
-  content_files_count: number;
-  total_files_count: number;
-}
-
-export async function getCurrentUserInfo(): Promise<UserInfo> {
-  const res = await api.get<UserInfo>("/auth/me");
-  return res.data;
-}
-
-export async function updateUserInfo(payload: UserUpdateRequest): Promise<UserInfo> {
-  const res = await api.patch<UserInfo>("/auth/me", payload);
-  return res.data;
-}
-
-export async function getUserContributions(year?: string): Promise<ContributionStats[]> {
-  const params = year ? { year } : {};
-  const res = await api.get<ContributionStats[]>("/auth/me/contributions", { params });
-  return res.data;
-}
-
-export async function uploadProfileImage(file: File): Promise<{ profile_image_url: string }> {
+export async function uploadProjectFile(projectId: number, file: File, fileType: string): Promise<FileAsset> {
   const formData = new FormData();
   formData.append("file", file);
-
-  const res = await api.post<{ profile_image_url: string }>("/auth/me/profile-image", formData, {
-    headers: {
-      "Content-Type": "multipart/form-data",
-    },
+  formData.append("file_type", fileType);
+  const res = await api.post<FileAsset>(`/projects/${projectId}/files`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
   });
   return res.data;
 }
 
-export async function deleteProfileImage(): Promise<void> {
-  await api.delete("/auth/me/profile-image");
-}
-
-///////////////
-// ACTIVITY API //
-///////////////
-
-export interface ActivityItem {
-  id: number;
-  type: "file_upload" | "file_delete" | "review";
-  timestamp: string;
-  user_name: string | null;
-  project_name: string;
-  project_year: string | null;
-  file_name: string | null;
-  file_type: string | null;
-  description: string;
-}
-
-export async function getRecentActivities(limit: number = 10): Promise<ActivityItem[]> {
-  const res = await api.get<ActivityItem[]>("/auth/activities", { params: { limit } });
-  return res.data;
-}
-
-///////////////
-// REVIEW API //
-///////////////
-
+// Review 관련 인터페이스
 export interface ReviewComment {
   id: number;
   review_id: number;
   author_id: number | null;
   author_name: string | null;
-  comment_type: "text" | "handwriting";
+  comment_type: "text" | "handwriting" | "attachment";
   text_content: string | null;
   handwriting_image_url: string | null;
   page_number: number | null;
@@ -281,18 +174,16 @@ export interface Review {
   file_name: string | null;
   project_name: string | null;
   project_year: string | null;
-  status: "pending" | "in_progress" | "request_revision" | "approved";
+  status: string;
   reviewer_id: number | null;
   reviewer_name: string | null;
   started_at: string | null;
   completed_at: string | null;
-  created_at: string;
-  updated_at: string;
   comments: ReviewComment[];
 }
 
 export interface ReviewCommentCreate {
-  comment_type: "text" | "handwriting";
+  comment_type: "text" | "handwriting" | "attachment";
   text_content?: string | null;
   handwriting_image_url?: string | null;
   page_number?: number | null;
@@ -300,20 +191,56 @@ export interface ReviewCommentCreate {
   y_position?: number | null;
 }
 
+export interface ReviewCommentUpdate {
+  text_content: string;
+}
+
 export interface ReviewStatusUpdate {
-  status: "in_progress" | "request_revision" | "approved";
+  status: "request_revision" | "approved";
+}
+
+// --- User / Activity (MyPage / HomePage) ---
+export type UserRole = "ADMIN" | "LEAD" | "MEMBER" | "PENDING";
+
+export interface UserInfo {
+  id: number;
+  username: string;
+  name: string;
+  role: UserRole;
+  department: string;
+  departments: string[];
+  phone_number: string | null;
+  phone_verified: boolean;
+  profile_image_url: string | null;
+}
+
+export interface ContributionStats {
+  year: string;
+  individual_items_count: number;
+  content_files_count: number;
+  total_files_count: number;
+}
+
+export interface ActivityItem {
+  id: number;
+  type: "file_upload" | "file_delete" | "review" | string;
+  timestamp: string;
+  user_name: string | null;
+  project_name: string;
+  project_year: string | null;
+  file_name: string | null;
+  file_type: string | null;
+  description: string;
+}
+
+// Review 관련 API
+export async function listContentFilesForReview(): Promise<Review[]> {
+  const res = await api.get<Review[]>("/reviews/content-files");
+  return res.data;
 }
 
 export async function getFileReview(fileId: number): Promise<Review> {
   const res = await api.get<Review>(`/reviews/files/${fileId}`);
-  return res.data;
-}
-
-export async function listContentFilesForReview(projectId?: number, status?: string): Promise<Review[]> {
-  const params: any = {};
-  if (projectId) params.project_id = projectId;
-  if (status) params.status = status;
-  const res = await api.get<Review[]>("/reviews/content-files", { params });
   return res.data;
 }
 
@@ -322,33 +249,82 @@ export async function startReview(fileId: number): Promise<Review> {
   return res.data;
 }
 
-export async function addReviewComment(fileId: number, comment: ReviewCommentCreate): Promise<ReviewComment> {
-  const res = await api.post<ReviewComment>(`/reviews/files/${fileId}/comments`, comment);
+export async function addReviewComment(fileId: number, data: ReviewCommentCreate): Promise<ReviewComment> {
+  const res = await api.post<ReviewComment>(`/reviews/files/${fileId}/comments`, data);
+  return res.data;
+}
+
+export async function updateReviewComment(fileId: number, commentId: number, data: ReviewCommentUpdate): Promise<ReviewComment> {
+  const res = await api.patch<ReviewComment>(`/reviews/files/${fileId}/comments/${commentId}`, data);
+  return res.data;
+}
+
+export async function deleteReviewComment(fileId: number, commentId: number): Promise<void> {
+  await api.delete(`/reviews/files/${fileId}/comments/${commentId}`);
+}
+
+export async function getCurrentUserInfo(): Promise<UserInfo> {
+  const res = await api.get<UserInfo>(`/auth/me`);
+  return res.data;
+}
+
+export async function updateUserInfo(payload: { name?: string; phone_number?: string }): Promise<UserInfo> {
+  const res = await api.patch<UserInfo>(`/auth/me`, payload);
+  return res.data;
+}
+
+export async function getUserContributions(year?: string): Promise<ContributionStats[]> {
+  const res = await api.get<ContributionStats[]>(`/auth/me/contributions`, { params: year ? { year } : undefined });
+  return res.data;
+}
+
+export async function uploadProfileImage(file: File): Promise<{ profile_image_url: string }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await api.post<{ profile_image_url: string }>(`/auth/me/profile-image`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return res.data;
+}
+
+export async function deleteProfileImage(): Promise<void> {
+  await api.delete(`/auth/me/profile-image`);
+}
+
+export async function getRecentActivities(limit = 10): Promise<ActivityItem[]> {
+  const res = await api.get<ActivityItem[]>(`/auth/activities`, { params: { limit } });
   return res.data;
 }
 
 export async function uploadHandwritingImage(
   fileId: number,
   file: File,
-  pageNumber?: number,
-  xPosition?: number,
-  yPosition?: number
+  page_number?: number,
+  x_position?: number,
+  y_position?: number
 ): Promise<{ handwriting_image_url: string; page_number?: number; x_position?: number; y_position?: number }> {
   const formData = new FormData();
   formData.append("file", file);
-  if (pageNumber !== undefined) formData.append("page_number", pageNumber.toString());
-  if (xPosition !== undefined) formData.append("x_position", xPosition.toString());
-  if (yPosition !== undefined) formData.append("y_position", yPosition.toString());
+  if (page_number !== undefined) formData.append("page_number", String(page_number));
+  if (x_position !== undefined) formData.append("x_position", String(x_position));
+  if (y_position !== undefined) formData.append("y_position", String(y_position));
 
   const res = await api.post<{ handwriting_image_url: string; page_number?: number; x_position?: number; y_position?: number }>(
     `/reviews/files/${fileId}/handwriting`,
     formData,
     {
-      headers: {
-        "Content-Type": "multipart/form-data",
-      },
+      headers: { "Content-Type": "multipart/form-data" },
     }
   );
+  return res.data;
+}
+
+export async function uploadAnnotatedPdf(fileId: number, file: File): Promise<ReviewComment> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await api.post<ReviewComment>(`/reviews/files/${fileId}/annotated-pdf`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
   return res.data;
 }
 
@@ -359,7 +335,56 @@ export async function stopReview(fileId: number): Promise<Review> {
 
 export async function getFileViewUrl(fileId: number): Promise<{ url: string; expires_minutes: number }> {
   const res = await api.get<{ url: string; expires_minutes: number }>(`/reviews/files/${fileId}/view-url`);
+  // baseURL과 결합하여 전체 URL 생성
+  // res.data.url이 /reviews/files/{id}/proxy 형식이므로 baseURL과 결합
+  const baseURL = api.defaults.baseURL || import.meta.env.VITE_API_BASE_URL || "/api";
+  // URL이 이미 /로 시작하므로 baseURL과 결합
+  const fullUrl = res.data.url.startsWith("http") 
+    ? res.data.url 
+    : `${baseURL}${res.data.url}`;
+  console.log("PDF View URL:", fullUrl); // 디버깅용
+  return { url: fullUrl, expires_minutes: res.data.expires_minutes };
+}
+
+export async function getProjectIndividualItemsCount(projectId: number): Promise<{ project_id: number; individual_items_count: number }> {
+  const res = await api.get<{ project_id: number; individual_items_count: number }>(`/projects/${projectId}/individual-items/count`);
   return res.data;
+}
+
+export async function getFileDownloadUrl(
+  projectId: number,
+  fileId: number
+): Promise<{ id: number; url: string; expires_minutes: number; filename: string }> {
+  const res = await api.get<{ id: number; url: string; expires_minutes: number; filename: string }>(
+    `/projects/${projectId}/files/${fileId}/download`
+  );
+  return res.data;
+}
+
+function parseFilenameFromContentDisposition(cd: string | undefined | null): string | null {
+  if (!cd) return null;
+  // Prefer RFC 5987 filename*=UTF-8''...
+  const mStar = cd.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (mStar && mStar[1]) {
+    try {
+      return decodeURIComponent(mStar[1].trim().replace(/^"+|"+$/g, ""));
+    } catch {
+      return mStar[1].trim().replace(/^"+|"+$/g, "");
+    }
+  }
+  const m = cd.match(/filename\s*=\s*("?)([^";]+)\1/i);
+  if (m && m[2]) return m[2].trim();
+  return null;
+}
+
+export async function downloadReviewPdf(
+  fileId: number
+): Promise<{ blob: Blob; filename: string; contentType: string }> {
+  const res = await api.get(`/reviews/files/${fileId}/proxy`, { responseType: "blob" });
+  const cd = (res.headers as any)?.["content-disposition"] as string | undefined;
+  const ct = ((res.headers as any)?.["content-type"] as string | undefined) || "application/pdf";
+  const filename = parseFilenameFromContentDisposition(cd) || `file_${fileId}.pdf`;
+  return { blob: res.data as Blob, filename, contentType: ct };
 }
 
 export async function updateReviewStatus(fileId: number, status: ReviewStatusUpdate): Promise<Review> {
@@ -367,142 +392,36 @@ export async function updateReviewStatus(fileId: number, status: ReviewStatusUpd
   return res.data;
 }
 
+// PDF 주석 관련 타입 및 API
+export interface PDFAnnotation {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  text: string;
+  author_id: number | null;
+  author_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
-// // FILE: frontend/src/data/files/api.ts
+export interface PDFAnnotationsData {
+  annotations: PDFAnnotation[];
+}
 
-// import axios from "axios";
+export interface PDFAnnotationCreate {
+  page: number;
+  x: number;
+  y: number;
+  text: string;
+}
 
-// const api = axios.create({
-//   baseURL: import.meta.env.VITE_API_BASE_URL,
-//   withCredentials: true,
-// });
+export async function getPDFAnnotations(fileId: number): Promise<PDFAnnotationsData> {
+  const res = await api.get<PDFAnnotationsData>(`/reviews/files/${fileId}/annotations`);
+  return res.data;
+}
 
-// export default api;
-
-// ///////////////
-// // INTERFACE //
-// ///////////////
-// // Must match backend Project schema
-// export interface Project {
-//   id: number;
-//   name: string;
-//   subject: string;
-//   year: string | null;
-
-//   // NEW: category
-//   category: string;
-
-//   // Legacy (kept for backward compatibility)
-//   deadline: string | null;
-
-//   // NEW multi deadlines
-//   deadline_1: string | null;
-//   deadline_2: string | null;
-//   deadline_final: string | null;
-// }
-
-// export interface CreateProjectRequest {
-//   name: string;
-//   subject: string;
-//   year: string | null;
-
-//   // NEW: category (default handled by backend too, but we send it when UI provides)
-//   category?: string;
-
-//   // Legacy (optional)
-//   deadline?: string | null;
-
-//   // NEW multi deadlines
-//   deadline_1?: string | null;
-//   deadline_2?: string | null;
-//   deadline_final?: string | null;
-// }
-
-// export interface UpdateProjectRequest {
-//   name?: string;
-//   subject?: string;
-//   year?: string | null;
-//   status?: string;
-//   description?: string | null;
-
-//   category?: string;
-
-//   deadline?: string | null;
-//   deadline_1?: string | null;
-//   deadline_2?: string | null;
-//   deadline_final?: string | null;
-// }
-
-// export interface FileAsset {
-//   id: number;
-//   project_id: number;
-//   file_key: string;
-//   original_name: string;
-//   mime_type?: string | null;
-//   size?: number | null;
-//   created_at: string;
-//   file_type?: string | null;
-// }
-
-// //////////////////////////
-
-// export async function deleteProject(id: number): Promise<void> {
-//   await api.delete(`/projects/${id}`);
-// }
-
-// export async function fetchProjects(): Promise<Project[]> {
-//   const res = await api.get<Project[]>("/projects");
-//   return res.data;
-// }
-
-// export async function createProject(data: CreateProjectRequest): Promise<Project> {
-//   const res = await api.post<Project>("/projects", data);
-//   return res.data;
-// }
-
-// export async function updateProject(
-//   projectId: number,
-//   data: UpdateProjectRequest
-// ): Promise<Project> {
-//   const res = await api.patch<Project>(`/projects/${projectId}`, data);
-//   return res.data;
-// }
-
-// ///// File Asset API //////
-
-// export async function getProjectFiles(projectId: number): Promise<FileAsset[]> {
-//   const res = await api.get<FileAsset[]>(`/projects/${projectId}/files`);
-//   return res.data;
-// }
-
-// export async function uploadProjectFile(
-//   projectId: number,
-//   file: File,
-//   fileType: string
-// ): Promise<{ id: number; file_key: string }> {
-//   const formData = new FormData();
-//   formData.append("file", file);
-//   formData.append("file_type", fileType);
-
-//   const res = await api.post<{ id: number; file_key: string }>(
-//     `/projects/${projectId}/files`,
-//     formData,
-//     {
-//       headers: {
-//         "Content-Type": "multipart/form-data",
-//       },
-//     }
-//   );
-//   return res.data;
-// }
-
-// export async function deleteProjectFile(projectId: number, fileId: number): Promise<void> {
-//   await api.delete(`/projects/${projectId}/files/${fileId}`);
-// }
-
-// export async function getFileDownloadUrl(projectId: number, fileId: number) {
-//   const res = await api.get<{ id: number; url: string; expires_minutes: number }>(
-//     `/projects/${projectId}/files/${fileId}/download`
-//   );
-//   return res.data;
-// }
+export async function savePDFAnnotations(fileId: number, data: PDFAnnotationsData): Promise<PDFAnnotationsData> {
+  const res = await api.post<PDFAnnotationsData>(`/reviews/files/${fileId}/annotations`, data);
+  return res.data;
+}

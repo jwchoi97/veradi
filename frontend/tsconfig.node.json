@@ -3,7 +3,11 @@
 "composite": true,
 "module": "ESNext",
 "moduleResolution": "Bundler",
-"allowSyntheticDefaultImports": true
+"allowSyntheticDefaultImports": true,
+"declaration": true,
+"emitDeclarationOnly": true,
+"outDir": "./node_modules/.tmp/tsconfig.node",
+"tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo"
 },
 "include": ["vite.config.ts"]
 }

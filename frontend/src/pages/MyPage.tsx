@@ -418,7 +418,7 @@ export default function MyPage() {
                     <label className="block text-xs text-gray-500 mb-1">소속팀</label>
                     <div className="text-sm text-gray-900">
                       {userInfo.departments && userInfo.departments.length > 0
-                        ? userInfo.departments.map((dept) => prettyDepartment(dept)).join(", ")
+                        ? userInfo.departments.map((dept: string) => prettyDepartment(dept)).join(", ")
                         : "-"}
                     </div>
                   </div>

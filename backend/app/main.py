@@ -4,7 +4,7 @@ load_dotenv()
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import projects, files, auth, reviews
+from .routers import projects, files, auth, reviews, pdf
 from .mariadb import models
 from .mariadb.database import engine
 
@@ -29,4 +29,5 @@ app.include_router(projects.router)
 app.include_router(files.router)
 app.include_router(auth.router)
 app.include_router(reviews.router)
+app.include_router(pdf.router)
 
