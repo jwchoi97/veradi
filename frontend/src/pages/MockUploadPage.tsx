@@ -10,6 +10,8 @@ import {
   deleteProjectFile,
   getFileDownloadUrl,
   listContentFilesForReview,
+  getFileReview,
+  getFileViewUrl,
   type Review,
 } from "../data/files/api";
 
@@ -262,6 +264,53 @@ export default function MockUploadPage() {
       alert("파일 삭제에 실패했습니다.");
     } finally {
       setIsBulkDeleting(false);
+    }
+  };
+
+  const openReadonlyPdfInNewTab = async (fileAssetId: number) => {
+    // Open the tab synchronously to avoid popup blockers.
+    const w = window.open("about:blank", "_blank");
+    if (!w) {
+      alert("팝업이 차단되어 새 탭을 열 수 없습니다. 브라우저에서 팝업 차단을 해제해 주세요.");
+      return;
+    }
+
+    try {
+      w.document.title = "PDF 로딩 중...";
+      w.document.body.innerHTML =
+        "<div style='font-family:system-ui; padding:24px; color:#111827;'>PDF 로딩 중...</div>";
+    } catch {
+      // ignore (some browsers may restrict writing)
+    }
+
+    try {
+      // 1) Prefer the latest annotated PDF attachment stored in MinIO (review comment attachment).
+      const review = await getFileReview(fileAssetId);
+      const attachment = (review.comments ?? [])
+        .filter((c) => c.comment_type === "attachment" && !!c.handwriting_image_url)
+        .sort((a, b) => {
+          const at = a.created_at ?? "";
+          const bt = b.created_at ?? "";
+          if (at !== bt) return at < bt ? 1 : -1;
+          return (a.id ?? 0) < (b.id ?? 0) ? 1 : -1;
+        })[0];
+
+      if (attachment?.handwriting_image_url) {
+        w.location.href = attachment.handwriting_image_url;
+        return;
+      }
+
+      // 2) Fallback: open the original PDF proxy/view URL.
+      const viewInfo = await getFileViewUrl(fileAssetId);
+      w.location.href = viewInfo.url;
+    } catch (e) {
+      console.error(e);
+      try {
+        w.close();
+      } catch {
+        // ignore
+      }
+      alert("PDF를 여는 데 실패했습니다.");
     }
   };
 
@@ -618,20 +667,19 @@ export default function MockUploadPage() {
                     {isPlaceholder ? (
                       ""
                     ) : (
-                      <a
-                        href={`/reviews?file_asset_id=${f.id}`}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => void openReadonlyPdfInNewTab(f.id)}
                         className={[
                           "inline-flex items-center rounded-full px-2 py-0.5",
                           "text-[11px] font-semibold",
                           "hover:underline cursor-pointer",
                           getReviewStatusBadgeClass(reviewStatusByFileId[f.id]),
                         ].join(" ")}
-                        title="새 탭에서 검토 페이지 열기"
+                        title="새 탭에서 주석 PDF 열기(읽기 전용)"
                       >
                         {getReviewStatusLabel(reviewStatusByFileId[f.id])}
-                      </a>
+                      </button>
                     )}
                   </td>
 
