@@ -25,6 +25,17 @@ import PdfJsKonvaViewer from "@/components/PdfJsKonvaViewer";
 
 export default function ReviewPage() {
   const me = getAuthedUser();
+  const [deepLinkFileAssetId] = useState<number | null>(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const raw = sp.get("file_asset_id") ?? sp.get("file") ?? sp.get("fileId");
+      if (!raw) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    } catch {
+      return null;
+    }
+  });
   const [reviews, setReviews] = useState<Review[]>([]);
   const [selectedReview, setSelectedReview] = useState<Review | null>(null);
   const [selectedFileAsset, setSelectedFileAsset] = useState<FileAsset | null>(null);
@@ -64,9 +75,40 @@ export default function ReviewPage() {
 
   // NOTE: iframe 기반 pdfjs-viewer 경로는 제거됨.
 
+  const openReviewByFileAssetId = async (fileAssetId: number) => {
+    setSelectedReview(null);
+    setSelectedFileAsset(null);
+    setFileUrl(null);
+
+    setLoading(true);
+    try {
+      // 상세 정보 조회 (코멘트 포함)
+      const fullReview = await getFileReview(fileAssetId);
+      setSelectedReview(fullReview);
+
+      // 프로젝트 파일 목록에서 원본 이름 찾기
+      if (typeof fullReview.project_id === "number") {
+        const projectFiles = await getProjectFiles(fullReview.project_id);
+        const asset = projectFiles.find((f) => f.id === fullReview.file_asset_id);
+        if (asset) setSelectedFileAsset(asset);
+      }
+
+      // PDF 뷰어용 URL 생성
+      const viewInfo = await getFileViewUrl(fileAssetId);
+      setFileUrl(viewInfo.url);
+    } catch (e) {
+      console.error("Failed to open review by file_asset_id", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     void loadReviews();
     void loadProjects();
+    if (deepLinkFileAssetId != null) {
+      void openReviewByFileAssetId(deepLinkFileAssetId);
+    }
   }, []);
 
   const loadReviews = async () => {

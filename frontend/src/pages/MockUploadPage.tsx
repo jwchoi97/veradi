@@ -618,16 +618,20 @@ export default function MockUploadPage() {
                     {isPlaceholder ? (
                       ""
                     ) : (
-                      <span
+                      <a
+                        href={`/reviews?file_asset_id=${f.id}`}
+                        target="_blank"
+                        rel="noreferrer"
                         className={[
                           "inline-flex items-center rounded-full px-2 py-0.5",
                           "text-[11px] font-semibold",
+                          "hover:underline cursor-pointer",
                           getReviewStatusBadgeClass(reviewStatusByFileId[f.id]),
                         ].join(" ")}
-                        title="콘텐츠 검토 상태"
+                        title="새 탭에서 검토 페이지 열기"
                       >
                         {getReviewStatusLabel(reviewStatusByFileId[f.id])}
-                      </span>
+                      </a>
                     )}
                   </td>
 
