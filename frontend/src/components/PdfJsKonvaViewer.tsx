@@ -6,6 +6,7 @@ import "pdfjs-dist/web/pdf_viewer.css";
 import Konva from "konva";
 import { getAuthedUser } from "@/auth";
 import { KonvaAnnotationManager } from "@/pdfjs-viewer/main";
+import { attachTouchGestures } from "@/pdfjs-viewer/core/input/touchGestures";
 
 // Worker 설정
 if (typeof window !== "undefined") {
@@ -118,6 +119,7 @@ export default function PdfJsKonvaViewer({
 
   const pdfViewerRef = useRef<PDFViewer | null>(null);
   const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
+  const loadingTaskRef = useRef<any>(null);
   const pageNumberInputRef = useRef<HTMLInputElement | null>(null);
   const annotationManagerRef = useRef<KonvaAnnotationManager | null>(null);
 
@@ -133,6 +135,7 @@ export default function PdfJsKonvaViewer({
 
   // Horizontal centering (canvas centered inside its scroll wrapper)
   const scrollParentRef = useRef<HTMLElement | null>(null);
+  const scrollParentYRef = useRef<HTMLElement | null>(null);
   const ignoreNextScrollRef = useRef(false);
   const userScrolledHorizRef = useRef(false);
 
@@ -156,6 +159,28 @@ export default function PdfJsKonvaViewer({
       el = el.parentElement as HTMLElement | null;
     }
     return null;
+  }, []);
+
+  const getScrollParentY = useCallback((): HTMLElement | null => {
+    if (scrollParentYRef.current) return scrollParentYRef.current;
+    const start = containerRef.current;
+    if (!start) return document.scrollingElement as HTMLElement | null;
+    let el: HTMLElement | null = start.parentElement as HTMLElement | null;
+    while (el) {
+      const style = window.getComputedStyle(el);
+      const ov = style.overflowY;
+      const isScrollableStyle =
+        ov === "auto" ||
+        ov === "scroll" ||
+        el.classList.toString().includes("overflow-y-auto") ||
+        el.classList.toString().includes("overflow-y-scroll");
+      if (isScrollableStyle && el.scrollHeight > el.clientHeight + 2) {
+        scrollParentYRef.current = el;
+        return el;
+      }
+      el = el.parentElement as HTMLElement | null;
+    }
+    return document.scrollingElement as HTMLElement | null;
   }, []);
 
   const centerCanvasInWrapper = useCallback(
@@ -453,6 +478,14 @@ export default function PdfJsKonvaViewer({
     if (!viewerReady || !pdfViewerRef.current || !fileUrl) return;
     
     let cancelled = false;
+    // Abort any previous in-flight load (prevents duplicate downloads/parsing).
+    try {
+      loadingTaskRef.current?.destroy?.();
+    } catch {
+      /* ignore */
+    }
+    loadingTaskRef.current = null;
+
     const load = async () => {
       setLoading(true);
       setLoadError(null);
@@ -467,7 +500,11 @@ export default function PdfJsKonvaViewer({
           url: fileUrl,
           httpHeaders: headers,
           withCredentials: true,
+          // Reduce request churn (especially over high-latency links) while still enabling range loading.
+          // 1MB is a good balance for PDFs served via our proxy.
+          rangeChunkSize: 1024 * 1024,
         });
+        loadingTaskRef.current = task;
         const pdfDocument = await task.promise;
         if (cancelled) return;
 
@@ -490,6 +527,13 @@ export default function PdfJsKonvaViewer({
     void load();
     return () => {
       cancelled = true;
+      try {
+        // Ensure network/worker is actually cancelled.
+        (loadingTaskRef.current as any)?.destroy?.();
+      } catch {
+        /* ignore */
+      }
+      loadingTaskRef.current = null;
     };
   }, [fileUrl, viewerReady, linkService]);
 
@@ -522,6 +566,27 @@ export default function PdfJsKonvaViewer({
         await mgr.init();
         if (disposed) return;
         mgr.updatePagesFromPdfLayout({ padding: 16, gap: 14 });
+
+        // Touch gestures (tablet): finger = scroll/pinch, pen/mouse = annotation interactions.
+        // Attach to Konva stage container which sits above the PDF canvases.
+        try {
+          const stageEl = container.querySelector("#konva-stage-container") as HTMLElement | null;
+          if (stageEl) {
+            const detach = attachTouchGestures({
+              element: stageEl,
+              getScrollX: getScrollParentX,
+              getScrollY: getScrollParentY,
+              getScale: () => Number(pdfViewer.currentScale || 1),
+              setScale: (next) => {
+                pdfViewer.currentScale = clampScale(next);
+              },
+              clampScale,
+            });
+            cleanupFns.push(detach);
+          }
+        } catch {
+          /* ignore */
+        }
       } catch (e) {
         console.error("Failed to init KonvaAnnotationManager", e);
       }
@@ -536,7 +601,7 @@ export default function PdfJsKonvaViewer({
       }
       cleanupFns = [];
     };
-  }, [viewerReady, docReady, fileId]);
+  }, [viewerReady, docReady, fileId, getScrollParentX, getScrollParentY, clampScale]);
 
   // 모드/툴 설정 반영
   useEffect(() => {

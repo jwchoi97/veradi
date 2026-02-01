@@ -76,9 +76,16 @@ def proxy_file_for_viewer(
     ensure_can_manage_project(user, project)
 
     try:
+        # Bucket existence should be ensured at startup / first use; cache prevents per-request MinIO calls.
         ensure_bucket(DEFAULT_BUCKET)
-        stat = minio_client.stat_object(bucket_name=DEFAULT_BUCKET, object_name=file_asset.file_key)
-        total_size = int(getattr(stat, "size", 0) or 0)
+
+        # Avoid a MinIO stat call for every Range request:
+        # pdf.js can issue MANY small range requests while loading.
+        # Prefer DB-cached size when available; fall back to stat_object only when needed.
+        total_size = int(file_asset.size or 0)
+        if total_size <= 0:
+            stat = minio_client.stat_object(bucket_name=DEFAULT_BUCKET, object_name=file_asset.file_key)
+            total_size = int(getattr(stat, "size", 0) or 0)
 
         # Range 요청 지원 (pdf.js가 부분 다운로드를 사용함)
         start = 0
@@ -121,7 +128,8 @@ def proxy_file_for_viewer(
         def generate():
             try:
                 while True:
-                    chunk = response.read(8192)  # 8KB chunks
+                    # Bigger chunks significantly reduce Python/ASGI overhead and improve throughput.
+                    chunk = response.read(256 * 1024)  # 256KB chunks
                     if not chunk:
                         break
                     yield chunk
@@ -135,6 +143,9 @@ def proxy_file_for_viewer(
             "Content-Type": file_asset.mime_type or "application/pdf",
             "Content-Disposition": f"inline; filename*=UTF-8''{quoted_filename}",
             "Accept-Ranges": "bytes",
+            # Encourage browser/proxy caching for a short period to speed up re-opens.
+            # This is a permissioned endpoint; keep it private and short-lived.
+            "Cache-Control": "private, max-age=300",
             "Access-Control-Allow-Origin": "*",  # CORS 헤더 추가
             "Access-Control-Allow-Methods": "GET,OPTIONS",
             "Access-Control-Allow-Headers": "*",
@@ -143,6 +154,10 @@ def proxy_file_for_viewer(
         if is_partial and total_size > 0:
             headers["Content-Range"] = f"bytes {start}-{end}/{total_size}"
             headers["Content-Length"] = str(length)
+        elif total_size > 0:
+            # Provide Content-Length for full responses as well. It helps pdf.js progress reporting
+            # and can reduce buffering/guesswork in some environments.
+            headers["Content-Length"] = str(total_size)
 
         return StreamingResponse(
             generate(),

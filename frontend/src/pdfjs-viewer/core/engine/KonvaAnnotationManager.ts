@@ -3,6 +3,7 @@ import type { Annotation, AnnotationType, PageMetrics } from "../model/types";
 import { loadAnnotations, saveAnnotations } from "../../api/annotations";
 import { computePageMetricsFromPdfLayout } from "../layout/PageLayoutProvider";
 import { applyStyleToRuns as applyStyleToTextRuns, normalizeTextRuns as normalizeTextRunsUtil, type TextRun } from "../text/textRuns";
+import { getPointerKind } from "../input/pointer";
 
 type EngineEvents = {
   modeChanged: AnnotationType;
@@ -53,6 +54,7 @@ export class KonvaAnnotationManager {
 
   // selection drag handle (drag within transformer box)
   private selectionHitRect: Konva.Rect | null = null;
+  private selectionDeleteBtn: Konva.Group | null = null;
   private isSelectionDragging = false;
   private selectionDragStart: { x: number; y: number } | null = null;
   private selectionDragStartNodes: Array<{ node: Konva.Node; x: number; y: number }> = [];
@@ -185,7 +187,10 @@ export class KonvaAnnotationManager {
       rotateEnabled: false,
       keepRatio: false,
       ignoreStroke: true,
-      enabledAnchors: ["top-left", "top-right", "bottom-left", "bottom-right"],
+      // Disable resizing in selection mode (bug-prone and not needed for now).
+      resizeEnabled: false,
+      enabledAnchors: [],
+      listening: false,
     });
     this.uiLayer.add(this.transformer);
 
@@ -205,7 +210,8 @@ export class KonvaAnnotationManager {
 
     if (this.stageContainerEl) {
       this.stageContainerEl.style.cursor = mode === "none" ? "default" : mode === "eraser" ? "cell" : "crosshair";
-      this.stageContainerEl.style.touchAction = mode === "none" ? "pan-x pan-y" : "none";
+      // Touch gestures (scroll/pinch) are handled at the app layer; keep native actions disabled here.
+      this.stageContainerEl.style.touchAction = "none";
     }
     // leaving freetext closes editor
     if (this.textEditingInput && mode !== "freetext") {
@@ -251,6 +257,12 @@ export class KonvaAnnotationManager {
         /* ignore */
       }
       this.selectionHitRect = null;
+      try {
+        this.selectionDeleteBtn?.destroy();
+      } catch {
+        /* ignore */
+      }
+      this.selectionDeleteBtn = null;
     }
 
     if (prev !== mode) this.emit("modeChanged", mode);
@@ -601,6 +613,12 @@ export class KonvaAnnotationManager {
       /* ignore */
     }
     this.selectionHitRect = null;
+    try {
+      this.selectionDeleteBtn?.destroy();
+    } catch {
+      /* ignore */
+    }
+    this.selectionDeleteBtn = null;
     this.uiLayer?.batchDraw();
   }
 
@@ -614,6 +632,12 @@ export class KonvaAnnotationManager {
         /* ignore */
       }
       this.selectionHitRect = null;
+      try {
+        this.selectionDeleteBtn?.destroy();
+      } catch {
+        /* ignore */
+      }
+      this.selectionDeleteBtn = null;
       return;
     }
     // union bbox in stage coords
@@ -653,6 +677,7 @@ export class KonvaAnnotationManager {
       });
       this.selectionHitRect.on("pointerdown", (evt: Konva.KonvaEventObject<PointerEvent>) => {
         if (this.currentMode !== "none") return;
+        if (getPointerKind((evt as any)?.evt) === "touch") return;
         if (!this.stage) return;
         const pos = this.stage.getPointerPosition();
         if (!pos) return;
@@ -669,14 +694,66 @@ export class KonvaAnnotationManager {
       });
       // keep behind transformer anchors
       this.uiLayer.add(this.selectionHitRect);
-      try {
-        this.transformer?.moveToTop();
-      } catch {
-        /* ignore */
-      }
     } else {
       this.selectionHitRect.position({ x, y });
       this.selectionHitRect.size({ width: w, height: h });
+    }
+
+    // Selection delete button (for tablets: tap to delete without keyboard)
+    const BTN = 18;
+    const margin = 2;
+    const bx = x + w - BTN - margin;
+    const by = y + margin;
+    if (!this.selectionDeleteBtn) {
+      const g = new Konva.Group({ x: bx, y: by, name: "selection-delete-btn", listening: true });
+      const bg = new Konva.Circle({
+        x: BTN / 2,
+        y: BTN / 2,
+        radius: BTN / 2,
+        fill: "rgba(239,68,68,0.95)",
+        stroke: "rgba(255,255,255,0.9)",
+        strokeWidth: 1,
+        listening: true,
+      });
+      const label = new Konva.Text({
+        x: 0,
+        y: 1,
+        width: BTN,
+        height: BTN,
+        text: "×",
+        fontSize: 14,
+        fontStyle: "bold",
+        align: "center",
+        fill: "#ffffff",
+        listening: false,
+      });
+      g.add(bg);
+      g.add(label);
+      g.on("pointerdown", (evt: any) => {
+        try {
+          evt.cancelBubble = true;
+          evt.evt?.preventDefault?.();
+        } catch {
+          /* ignore */
+        }
+        this.deleteSelected();
+      });
+      this.selectionDeleteBtn = g;
+      this.uiLayer.add(g);
+    } else {
+      this.selectionDeleteBtn.position({ x: bx, y: by });
+    }
+
+    // Ensure correct z-order (hit rect behind, transformer border above, delete button on top)
+    try {
+      this.transformer?.moveToTop();
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.selectionDeleteBtn?.moveToTop();
+    } catch {
+      /* ignore */
     }
   }
 
@@ -1206,6 +1283,25 @@ export class KonvaAnnotationManager {
     if (!this.stage) return;
     const stage = this.stage;
 
+    // Never allow touch to start Konva dragging (touch is reserved for app gestures).
+    stage.on("dragstart", (evt: any) => {
+      try {
+        if (getPointerKind(evt?.evt) !== "touch") return;
+      } catch {
+        return;
+      }
+      try {
+        evt.cancelBubble = true;
+      } catch {
+        /* ignore */
+      }
+      try {
+        evt.target?.stopDrag?.();
+      } catch {
+        /* ignore */
+      }
+    });
+
     const hitTestPage = (pos: { x: number; y: number }): number | null => {
       for (const [page, m] of this.pageMetrics.entries()) {
         if (pos.x >= m.x && pos.x <= m.x + m.width && pos.y >= m.y && pos.y <= m.y + m.height) return page;
@@ -1292,6 +1388,9 @@ export class KonvaAnnotationManager {
       const pos = stage.getPointerPosition();
       if (!pos) return;
 
+      // Touch is reserved for app-level gestures (scroll/pinch). Ignore all annotation interactions.
+      if (getPointerKind((evt as any)?.evt) === "touch") return;
+
       if (this.currentMode === "none") {
         const rawHit = stage.getIntersection(pos);
         const node = rawHit ? (this.resolveAnnotationNode(rawHit as any) || (rawHit as any)) : null;
@@ -1300,12 +1399,7 @@ export class KonvaAnnotationManager {
           const next = shift ? Array.from(new Set([...this.selectedNodes, node])) : [node];
           this.setSelection(next);
         } else {
-          // start marquee selection for mouse/pen; keep touch for scrolling
-          const pointerType = String((evt.evt as any)?.pointerType || "");
-          if (pointerType === "touch") {
-            if (!shift) this.clearSelection();
-            return;
-          }
+          // start marquee selection for mouse/pen
           this.isMarqueeSelecting = true;
           this.marqueeStart = { x: pos.x, y: pos.y };
           this.marqueeAdditive = shift;

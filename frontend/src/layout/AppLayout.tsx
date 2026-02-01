@@ -105,17 +105,6 @@ export default function AppLayout() {
 
             <div className="side-group-title">콘텐츠 페이지</div>
             <NavLink
-              to="/erp/content/mock"
-              className={({ isActive }: NavState) =>
-                `side-link side-link-sub ${isActive ? "active" : ""}`
-              }
-            >
-              <span className="side-link-icon">
-                <UploadCloud className="h-4 w-4" />
-              </span>
-              콘텐츠 업로드
-            </NavLink>
-            <NavLink
               to="/erp/content/individual"
               className={({ isActive }: NavState) =>
                 `side-link side-link-sub ${isActive ? "active" : ""}`
@@ -125,6 +114,17 @@ export default function AppLayout() {
                 <FileText className="h-4 w-4" />
               </span>
               개별 문항 업로드
+            </NavLink>
+            <NavLink
+              to="/erp/content/mock"
+              className={({ isActive }: NavState) =>
+                `side-link side-link-sub ${isActive ? "active" : ""}`
+              }
+            >
+              <span className="side-link-icon">
+                <UploadCloud className="h-4 w-4" />
+              </span>
+              콘텐츠 업로드
             </NavLink>
             <NavLink
               to="/reviews"

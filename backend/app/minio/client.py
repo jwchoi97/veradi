@@ -29,8 +29,14 @@ minio_client = Minio(
     secure=MINIO_SECURE,
 )
 
+_ensured_buckets: set[str] = set()
+
 def ensure_bucket(bucket_name: str = DEFAULT_BUCKET) -> None:
     if not bucket_name:
         raise ValueError("Bucket name is empty. Set MINIO_BUCKET.")
+    # Avoid a network roundtrip (bucket_exists) on every request path.
+    if bucket_name in _ensured_buckets:
+        return
     if not minio_client.bucket_exists(bucket_name):
         minio_client.make_bucket(bucket_name)
+    _ensured_buckets.add(bucket_name)

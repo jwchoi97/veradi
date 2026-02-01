@@ -10,7 +10,7 @@ class __PdfJsViewerMainTsArtifact {
     if (this.contentDrawRaf !== null) return;
     this.contentDrawRaf = window.requestAnimationFrame(() => {
       this.contentDrawRaf = null;
-      try { this.contentLayer?.batchDraw(); } catch { /* ignore */ }
+      try { this.contentLayer?.batchDraw(); } catch (_e) { /* ignore */ }
     });
   }
 
@@ -19,38 +19,38 @@ class __PdfJsViewerMainTsArtifact {
     if (this.uiDrawRaf !== null) return;
     this.uiDrawRaf = window.requestAnimationFrame(() => {
       this.uiDrawRaf = null;
-      try { this.uiLayer?.batchDraw(); } catch { /* ignore */ }
+      try { this.uiLayer?.batchDraw(); } catch (_e) { /* ignore */ }
     });
   }
 
   destroy() {
     try {
       this.clearSelection();
-    } catch {
+    } catch (_e) {
       /* ignore */
     }
     if (this.textEditingInput) {
-      try { this.textEditingInput.remove(); } catch { /* ignore */ }
+      try { this.textEditingInput.remove(); } catch (_e) { /* ignore */ }
       this.textEditingInput = null;
     }
     // remove listeners/observers
     for (const fn of this.disposeFns.splice(0)) {
-      try { fn(); } catch { /* ignore */ }
+      try { fn(); } catch (_e) { /* ignore */ }
     }
     if (this.contentDrawRaf !== null) {
-      try { window.cancelAnimationFrame(this.contentDrawRaf); } catch { /* ignore */ }
+      try { window.cancelAnimationFrame(this.contentDrawRaf); } catch (_e) { /* ignore */ }
       this.contentDrawRaf = null;
     }
     if (this.uiDrawRaf !== null) {
-      try { window.cancelAnimationFrame(this.uiDrawRaf); } catch { /* ignore */ }
+      try { window.cancelAnimationFrame(this.uiDrawRaf); } catch (_e) { /* ignore */ }
       this.uiDrawRaf = null;
     }
     if (this.stage) {
-      try { this.stage.destroy(); } catch { /* ignore */ }
+      try { this.stage.destroy(); } catch (_e) { /* ignore */ }
       this.stage = null;
     }
     if (this.stageContainerEl) {
-      try { this.stageContainerEl.remove(); } catch { /* ignore */ }
+      try { this.stageContainerEl.remove(); } catch (_e) { /* ignore */ }
       this.stageContainerEl = null;
     }
   }
@@ -315,7 +315,7 @@ class __PdfJsViewerMainTsArtifact {
       this.stageContainerEl.style.touchAction = mode === "none" ? "pan-x pan-y" : "none";
     }
     // Ensure hit testing works after drawing mode disabled it.
-    try { this.contentLayer?.hitGraphEnabled(true); } catch { /* ignore */ }
+    try { this.contentLayer?.hitGraphEnabled(true); } catch (_e) { /* ignore */ }
 
     // Transformer 숨기기
     if (this.transformer && this.selectedNodes.length > 0) {
@@ -594,7 +594,7 @@ class __PdfJsViewerMainTsArtifact {
       if (!ann || ann.type !== "freetext") return;
 
       evt.cancelBubble = true;
-      try { (node as any).stopDrag?.(); } catch { /* ignore */ }
+      try { (node as any).stopDrag?.(); } catch (_e) { /* ignore */ }
       if (this.requestModeChange) this.requestModeChange("freetext");
       else this.setMode("freetext");
 
@@ -624,7 +624,7 @@ class __PdfJsViewerMainTsArtifact {
             node.draggable(true);
             // 텍스트는 더블클릭 편집 UX를 위해 pointerdown 즉시 startDrag는 하지 않음
             if (!(node instanceof Konva.Text)) {
-              try { node.startDrag(); } catch { /* ignore */ }
+              try { node.startDrag(); } catch (_e) { /* ignore */ }
             }
           }
         } else {
@@ -746,8 +746,8 @@ class __PdfJsViewerMainTsArtifact {
           hitStrokeWidth: Math.max(14, this.inkSettings.width * 6),
         });
         // Reduce work while actively drawing.
-        try { this.currentDrawing.listening(false); } catch { /* ignore */ }
-        try { this.contentLayer?.hitGraphEnabled(false); } catch { /* ignore */ }
+        try { this.currentDrawing.listening(false); } catch (_e) { /* ignore */ }
+        try { this.contentLayer?.hitGraphEnabled(false); } catch (_e) { /* ignore */ }
         group.add(this.currentDrawing);
         this.scheduleContentDraw();
       } else if (this.currentMode === "highlight") {
@@ -785,8 +785,8 @@ class __PdfJsViewerMainTsArtifact {
           shadowForStrokeEnabled: false,
           hitStrokeWidth: Math.max(24, width * 4),
         });
-        try { this.currentDrawing.listening(false); } catch { /* ignore */ }
-        try { this.contentLayer?.hitGraphEnabled(false); } catch { /* ignore */ }
+        try { this.currentDrawing.listening(false); } catch (_e) { /* ignore */ }
+        try { this.contentLayer?.hitGraphEnabled(false); } catch (_e) { /* ignore */ }
         group.add(this.currentDrawing);
         this.scheduleContentDraw();
       }
@@ -1011,11 +1011,11 @@ class __PdfJsViewerMainTsArtifact {
         this.annotations[page].push(ann);
 
         this.currentDrawing.id(id);
-        try { this.currentDrawing.listening(true); } catch { /* ignore */ }
+        try { this.currentDrawing.listening(true); } catch (_e) { /* ignore */ }
         this.currentDrawing = null;
         this.currentPoints = [];
         this.saveToUndo();
-        try { this.contentLayer?.hitGraphEnabled(true); } catch { /* ignore */ }
+        try { this.contentLayer?.hitGraphEnabled(true); } catch (_e) { /* ignore */ }
         this.scheduleContentDraw();
       } else if (this.currentMode === "highlight" && this.currentDrawing) {
         const pts = this.currentPoints;
@@ -1076,7 +1076,7 @@ class __PdfJsViewerMainTsArtifact {
           if (!this.annotations[page]) this.annotations[page] = [];
           this.annotations[page].push(ann);
           this.saveToUndo();
-          try { this.contentLayer?.hitGraphEnabled(true); } catch { /* ignore */ }
+          try { this.contentLayer?.hitGraphEnabled(true); } catch (_e) { /* ignore */ }
           this.scheduleContentDraw();
         } else {
           // ✅ 드래그: 직선(highlight stroke) 저장
@@ -1102,14 +1102,14 @@ class __PdfJsViewerMainTsArtifact {
           };
 
           this.currentDrawing.id(id);
-          try { this.currentDrawing.listening(true); } catch { /* ignore */ }
+          try { this.currentDrawing.listening(true); } catch (_e) { /* ignore */ }
           this.currentDrawing = null;
           this.currentPoints = [];
           this.currentHighlightWidth = null;
           if (!this.annotations[page]) this.annotations[page] = [];
           this.annotations[page].push(ann);
           this.saveToUndo();
-          try { this.contentLayer?.hitGraphEnabled(true); } catch { /* ignore */ }
+          try { this.contentLayer?.hitGraphEnabled(true); } catch (_e) { /* ignore */ }
           this.scheduleContentDraw();
         }
       }
@@ -1276,7 +1276,7 @@ class __PdfJsViewerMainTsArtifact {
     document.body.appendChild(ta);
     ta.focus();
     this.textEditingInput = ta;
-    try { this.requestTextSettingsSync?.({ color: this.textSettings.color, fontSize: this.textSettings.fontSize, fontWeight: this.textSettings.fontWeight }); } catch { /* ignore */ }
+    try { this.requestTextSettingsSync?.({ color: this.textSettings.color, fontSize: this.textSettings.fontSize, fontWeight: this.textSettings.fontWeight }); } catch (_e) { /* ignore */ }
 
     const save = () => {
       const text = ta.value;
@@ -1388,7 +1388,7 @@ class __PdfJsViewerMainTsArtifact {
     document.body.appendChild(ta);
     ta.focus();
     this.textEditingInput = ta;
-    try { this.requestTextSettingsSync?.({ color: baseColor, fontSize: baseFontSize, fontWeight: baseWeight }); } catch { /* ignore */ }
+    try { this.requestTextSettingsSync?.({ color: baseColor, fontSize: baseFontSize, fontWeight: baseWeight }); } catch (_e) { /* ignore */ }
 
     const commit = () => {
       const bb = ta.getBoundingClientRect();
@@ -1521,7 +1521,7 @@ class __PdfJsViewerMainTsArtifact {
     document.body.appendChild(ta);
     ta.focus();
     this.textEditingInput = ta;
-    try { this.requestTextSettingsSync?.({ color: baseColor, fontSize: baseFontSize, fontWeight: baseWeight }); } catch { /* ignore */ }
+    try { this.requestTextSettingsSync?.({ color: baseColor, fontSize: baseFontSize, fontWeight: baseWeight }); } catch (_e) { /* ignore */ }
 
     // Initialize editing runs (single run if not rich).
     const initRuns =
