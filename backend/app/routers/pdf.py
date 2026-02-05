@@ -11,6 +11,7 @@ from ..mariadb.database import SessionLocal
 from ..mariadb.models import FileAsset, Review
 from ..minio.service import upload_stream
 from .auth import get_current_user
+from ..utils.storage_derivation import derive_baked_key
 
 router = APIRouter(prefix="/pdf", tags=["pdf"])
 
@@ -47,7 +48,7 @@ async def save_pdf_with_annotations(
 
     ensure_can_manage_project(user, project)
 
-    # Ensure a Review exists (we reuse review namespace for storage location)
+    # Ensure a Review exists (review workflow state)
     review = db.query(Review).filter(Review.file_asset_id == file_id).first()
     if not review:
         review = Review(file_asset_id=file_id, status="pending")
@@ -56,7 +57,9 @@ async def save_pdf_with_annotations(
         db.refresh(review)
 
     original_name = file.filename or f"annotated-{file_id}.pdf"
-    object_key = f"reviews/{review.id}/annotated/{uuid.uuid4().hex}.pdf"
+    # Store baked PDF next to original using deterministic postfix key.
+    # We keep the original `asset.file_key` intact.
+    object_key = derive_baked_key(asset.file_key)
 
     try:
         up = upload_stream(
@@ -73,13 +76,6 @@ async def save_pdf_with_annotations(
             await file.close()
         except Exception:
             pass
-
-    # Replace the underlying stored PDF for this FileAsset (same file_id keeps working)
-    asset.file_key = up.object_key
-    asset.mime_type = "application/pdf"
-    asset.updated_at = datetime.utcnow()
-    db.add(asset)
-    db.commit()
 
     return {"file_id": file_id, "object_key": up.object_key}
 

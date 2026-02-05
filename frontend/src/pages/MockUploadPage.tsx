@@ -10,8 +10,7 @@ import {
   deleteProjectFile,
   getFileDownloadUrl,
   listContentFilesForReview,
-  getFileReview,
-  getFileViewUrl,
+  getFileInlineUrl,
   type Review,
 } from "../data/files/api";
 
@@ -284,25 +283,10 @@ export default function MockUploadPage() {
     }
 
     try {
-      // 1) Prefer the latest annotated PDF attachment stored in MinIO (review comment attachment).
-      const review = await getFileReview(fileAssetId);
-      const attachment = (review.comments ?? [])
-        .filter((c) => c.comment_type === "attachment" && !!c.handwriting_image_url)
-        .sort((a, b) => {
-          const at = a.created_at ?? "";
-          const bt = b.created_at ?? "";
-          if (at !== bt) return at < bt ? 1 : -1;
-          return (a.id ?? 0) < (b.id ?? 0) ? 1 : -1;
-        })[0];
-
-      if (attachment?.handwriting_image_url) {
-        w.location.href = attachment.handwriting_image_url;
-        return;
-      }
-
-      // 2) Fallback: open the original PDF proxy/view URL.
-      const viewInfo = await getFileViewUrl(fileAssetId);
-      w.location.href = viewInfo.url;
+      // Open baked (annotated) PDF in a new tab via presigned URL.
+      // Avoid /proxy because new-tab navigation cannot attach X-User-Id header.
+      const { url } = await getFileInlineUrl(fileAssetId);
+      w.location.href = url;
     } catch (e) {
       console.error(e);
       try {

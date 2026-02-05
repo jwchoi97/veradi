@@ -79,11 +79,67 @@ export class KonvaAnnotationManager {
 
   // settings
   private inkSettings = { color: "#111827", width: 2 };
-  private highlightSettings = { color: "#FFF066", width: 12, opacity: 0.75 };
+  private highlightSettings = { color: "#FFF066", opacity: 0.75 };
 
   // editor overlay
   private textEditingOverlay: HTMLDivElement | null = null;
   private textEditingInput: HTMLElement | null = null;
+
+  // highlight (native text selection) DOM hook
+  private highlightSelectionCleanup: (() => void) | null = null;
+
+  // highlight DOM rendering (behind textLayer)
+  private highlightDomLayerByPage: Map<number, HTMLDivElement> = new Map();
+  private highlightDomById: Map<string, HTMLDivElement> = new Map();
+
+  private getStageBox(): DOMRect | null {
+    try {
+      return this.stage?.container?.()?.getBoundingClientRect?.() ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private domRectToStageRect(r: DOMRect) {
+    const sb = this.getStageBox();
+    if (!sb) return null;
+    return {
+      x: r.left - sb.left,
+      y: r.top - sb.top,
+      width: r.width,
+      height: r.height,
+    };
+  }
+
+  private stageRectContainsDomHighlight(pos: { x: number; y: number }) {
+    const sb = this.getStageBox();
+    if (!sb) return null;
+    const cx = sb.left + pos.x;
+    const cy = sb.top + pos.y;
+    // Find page quickly
+    let pageNum: number | null = null;
+    try {
+      const el = document.elementFromPoint(cx, cy) as HTMLElement | null;
+      const pageEl = el?.closest?.(".page") as HTMLElement | null;
+      if (pageEl && this.container.contains(pageEl)) {
+        const n = Number(pageEl.getAttribute("data-page-number") || (pageEl as any).dataset?.pageNumber || "");
+        if (Number.isFinite(n) && n > 0) pageNum = n;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    for (const [id, el] of Array.from(this.highlightDomById.entries())) {
+      if (!el || !el.isConnected) continue;
+      if (pageNum != null && (el.dataset?.pageNum || "") !== String(pageNum)) continue;
+      const r = el.getBoundingClientRect();
+      if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) {
+        const stageRect = this.domRectToStageRect(r);
+        return stageRect ? { id, rect: stageRect } : { id, rect: null };
+      }
+    }
+    return null;
+  }
 
   // richtext editing state
   private activeTextEdit:
@@ -137,6 +193,12 @@ export class KonvaAnnotationManager {
       /* ignore */
     }
     try {
+      this.highlightSelectionCleanup?.();
+    } catch {
+      /* ignore */
+    }
+    this.highlightSelectionCleanup = null;
+    try {
       this.stage?.destroy();
     } catch {
       /* ignore */
@@ -152,12 +214,25 @@ export class KonvaAnnotationManager {
     }
     this.stageContainerEl = null;
     this.pageGroups.clear();
+    try {
+      for (const el of this.highlightDomLayerByPage.values()) el.remove();
+    } catch {
+      /* ignore */
+    }
+    this.highlightDomLayerByPage.clear();
+    this.highlightDomById.clear();
     this.pageMetrics.clear();
     this.selectedNodes = [];
   }
 
   async init() {
-    // create overlay container
+    try {
+      const pos = window.getComputedStyle(this.container).position;
+      if (!pos || pos === "static") this.container.style.position = "relative";
+    } catch {
+      if (!this.container.style.position) this.container.style.position = "relative";
+    }
+    // main overlay container (ABOVE textLayer): handles interaction + ink/text rendering
     const stageContainer = document.createElement("div");
     stageContainer.id = "konva-stage-container";
     stageContainer.style.position = "absolute";
@@ -167,13 +242,6 @@ export class KonvaAnnotationManager {
     stageContainer.style.zIndex = "10";
     stageContainer.style.background = "transparent";
     stageContainer.style.touchAction = "pan-x pan-y";
-
-    try {
-      const pos = window.getComputedStyle(this.container).position;
-      if (!pos || pos === "static") this.container.style.position = "relative";
-    } catch {
-      if (!this.container.style.position) this.container.style.position = "relative";
-    }
     this.container.appendChild(stageContainer);
     this.stageContainerEl = stageContainer;
 
@@ -196,6 +264,27 @@ export class KonvaAnnotationManager {
 
     this.bindStageEvents();
 
+    // When highlight mode is active, let the browser/pdf.js perform real text selection,
+    // then convert the selection rects into persistent highlights.
+    try {
+      this.highlightSelectionCleanup?.();
+    } catch {
+      /* ignore */
+    }
+    this.highlightSelectionCleanup = null;
+    try {
+      const onMouseUp = () => {
+        if (this.currentMode !== "highlight") return;
+        this.applyHighlightsFromNativeSelection();
+      };
+      document.addEventListener("mouseup", onMouseUp, { capture: true });
+      this.highlightSelectionCleanup = () => {
+        document.removeEventListener("mouseup", onMouseUp as any, true as any);
+      };
+    } catch {
+      this.highlightSelectionCleanup = null;
+    }
+
     this.annotations = await loadAnnotations(this.fileId, this.userId);
     this.reloadAllAnnotations();
   }
@@ -209,9 +298,18 @@ export class KonvaAnnotationManager {
     this.currentMode = mode;
 
     if (this.stageContainerEl) {
-      this.stageContainerEl.style.cursor = mode === "none" ? "default" : mode === "eraser" ? "cell" : "crosshair";
+      // highlight mode should feel like "text selection" (I-beam)
+      this.stageContainerEl.style.cursor =
+        mode === "highlight" ? "text" : mode === "none" ? "default" : mode === "eraser" ? "cell" : "crosshair";
       // Touch gestures (scroll/pinch) are handled at the app layer; keep native actions disabled here.
       this.stageContainerEl.style.touchAction = "none";
+      // In highlight mode we let pdf.js textLayer handle real selection.
+      this.stageContainerEl.style.pointerEvents = mode === "highlight" ? "none" : "auto";
+    }
+    try {
+      this.container.style.cursor = mode === "highlight" ? "text" : "";
+    } catch {
+      /* ignore */
     }
     // leaving freetext closes editor
     if (this.textEditingInput && mode !== "freetext") {
@@ -273,8 +371,7 @@ export class KonvaAnnotationManager {
     if (typeof params.width === "number" && Number.isFinite(params.width)) this.inkSettings.width = Math.max(1, params.width);
   }
 
-  setHighlightSettings(params: { color?: string; width?: number; opacity?: number }) {
-    if (typeof params.width === "number" && Number.isFinite(params.width)) this.highlightSettings.width = Math.max(4, params.width);
+  setHighlightSettings(params: { color?: string; opacity?: number }) {
     if (typeof params.opacity === "number" && Number.isFinite(params.opacity)) this.highlightSettings.opacity = Math.min(1, Math.max(0.05, params.opacity));
     if (typeof params.color === "string") this.highlightSettings.color = params.color;
   }
@@ -309,6 +406,7 @@ export class KonvaAnnotationManager {
     }
     this.contentLayer?.batchDraw();
     this.uiLayer?.batchDraw();
+    this.refreshHighlightDomAllPages();
   }
 
   private rescaleAllPages() {
@@ -336,10 +434,23 @@ export class KonvaAnnotationManager {
     };
 
     for (const ann of pageAnns) {
-      const node = g.findOne(`#${ann.id}`) as Konva.Node | null;
-      if (!node) continue;
       const data = ann.data || {};
       const v = data.v;
+
+      // Highlight rectangles are rendered as DOM (behind textLayer), not Konva.
+      if (ann.type === "highlight" && data.rectNorm) {
+        this.upsertHighlightDomFromRectNorm({
+          pageNum,
+          id: ann.id,
+          rectNorm: data.rectNorm,
+          color: typeof data.color === "string" ? data.color : this.highlightSettings.color,
+          opacity: typeof data.opacity === "number" ? data.opacity : this.highlightSettings.opacity,
+        });
+        continue;
+      }
+
+      const node = g.findOne(`#${ann.id}`) as Konva.Node | null;
+      if (!node) continue;
 
       if (ann.type === "ink" && v === 2 && Array.isArray(data.pointsNorm) && node instanceof Konva.Line) {
         const out: number[] = [];
@@ -358,7 +469,7 @@ export class KonvaAnnotationManager {
         node.points(out);
         node.strokeWidth(data.width || 12);
         node.hitStrokeWidth(Math.max(44, (data.width || 12) * 10));
-        node.globalCompositeOperation("multiply");
+        node.globalCompositeOperation("source-over");
         continue;
       }
 
@@ -464,10 +575,15 @@ export class KonvaAnnotationManager {
           /* ignore */
         }
       }
+      // Also remove DOM-based highlights.
+      for (const id of Array.from(ids)) {
+        this.removeHighlightDomById(id);
+      }
       this.clearSelection();
     });
     this.contentLayer?.batchDraw();
     this.uiLayer?.batchDraw();
+    this.refreshHighlightDomAllPages();
   }
 
   // Back-compat clipboard APIs (used by `pdfjs-viewer/toolbar/clipboard.ts`)
@@ -603,6 +719,21 @@ export class KonvaAnnotationManager {
   private clearSelection() {
     try {
       this.transformer?.detach();
+    } catch {
+      /* ignore */
+    }
+    // Clean up UI-only highlight outline nodes (used for selecting DOM highlights).
+    try {
+      for (const n of this.selectedNodes) {
+        if (!n) continue;
+        if (typeof (n as any).hasName === "function" && (n as any).hasName("hl-outline")) {
+          try {
+            n.destroy();
+          } catch {
+            /* ignore */
+          }
+        }
+      }
     } catch {
       /* ignore */
     }
@@ -758,6 +889,24 @@ export class KonvaAnnotationManager {
   }
 
   private setSelection(nodes: Konva.Node[]) {
+    // If we are replacing selection, remove any previous UI-only highlight outlines that are not reused.
+    try {
+      const keep = new Set(nodes.map((n) => n?.id?.()).filter(Boolean));
+      for (const n of this.selectedNodes) {
+        const id = n?.id?.();
+        if (!id) continue;
+        if (keep.has(id)) continue;
+        if (typeof (n as any).hasName === "function" && (n as any).hasName("hl-outline")) {
+          try {
+            n.destroy();
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
     this.selectedNodes = nodes;
     if (!this.transformer) return;
     try {
@@ -816,6 +965,577 @@ export class KonvaAnnotationManager {
     return out;
   }
 
+  private boxesIntersect(
+    a: { x: number; y: number; width: number; height: number },
+    b: { x: number; y: number; width: number; height: number }
+  ) {
+    const ax2 = a.x + a.width;
+    const ay2 = a.y + a.height;
+    const bx2 = b.x + b.width;
+    const by2 = b.y + b.height;
+    return a.x < bx2 && ax2 > b.x && a.y < by2 && ay2 > b.y;
+  }
+
+  private mergeHighlightRects(rects: Array<{ x: number; y: number; width: number; height: number }>) {
+    if (rects.length <= 1) return rects;
+
+    // Group by approximate line-center to merge word boxes into line boxes.
+    const keyFor = (r: { x: number; y: number; width: number; height: number }) => Math.round((r.y + r.height / 2) / 8);
+    const byLine = new Map<number, Array<{ x: number; y: number; width: number; height: number }>>();
+    for (const r of rects) {
+      const k = keyFor(r);
+      const list = byLine.get(k) ?? [];
+      list.push(r);
+      byLine.set(k, list);
+    }
+
+    const merged: Array<{ x: number; y: number; width: number; height: number }> = [];
+    const gapTol = 4; // px
+    const overlapTol = 0.35; // vertical overlap ratio
+
+    const overlapRatio = (a: any, b: any) => {
+      const top = Math.max(a.y, b.y);
+      const bot = Math.min(a.y + a.height, b.y + b.height);
+      const inter = Math.max(0, bot - top);
+      const denom = Math.max(1, Math.min(a.height, b.height));
+      return inter / denom;
+    };
+
+    for (const [, items] of byLine.entries()) {
+      items.sort((p, q) => (p.x - q.x) || (p.y - q.y));
+      let cur: { x: number; y: number; width: number; height: number } | null = null;
+      for (const r of items) {
+        if (!cur) {
+          cur = { ...r };
+          continue;
+        }
+        const curRight = cur.x + cur.width;
+        const rRight = r.x + r.width;
+        const closeEnough = r.x <= curRight + gapTol;
+        const vOverlapOk = overlapRatio(cur, r) >= overlapTol;
+        if (closeEnough && vOverlapOk) {
+          const nx = Math.min(cur.x, r.x);
+          const ny = Math.min(cur.y, r.y);
+          const nr = Math.max(curRight, rRight);
+          const nb = Math.max(cur.y + cur.height, r.y + r.height);
+          cur = { x: nx, y: ny, width: nr - nx, height: nb - ny };
+        } else {
+          merged.push(cur);
+          cur = { ...r };
+        }
+      }
+      if (cur) merged.push(cur);
+    }
+
+    // Keep output stable: top-to-bottom then left-to-right
+    merged.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+    return merged;
+  }
+
+  private findPageElementForClientRect(r: DOMRect): HTMLElement | null {
+    try {
+      const cx = r.left + Math.max(1, Math.min(r.width - 1, r.width / 2));
+      const cy = r.top + Math.max(1, Math.min(r.height - 1, r.height / 2));
+      if (Number.isFinite(cx) && Number.isFinite(cy)) {
+        const el = document.elementFromPoint(cx, cy) as HTMLElement | null;
+        const page = el?.closest?.(".page") as HTMLElement | null;
+        if (page && this.container.contains(page)) return page;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    // Fallback: brute-force match by intersecting bounding boxes.
+    try {
+      const pages = Array.from(this.container.querySelectorAll(".page")) as HTMLElement[];
+      let best: { el: HTMLElement; area: number } | null = null;
+      for (const p of pages) {
+        const pr = p.getBoundingClientRect();
+        const ix = Math.max(0, Math.min(r.right, pr.right) - Math.max(r.left, pr.left));
+        const iy = Math.max(0, Math.min(r.bottom, pr.bottom) - Math.max(r.top, pr.top));
+        const area = ix * iy;
+        if (area <= 0) continue;
+        if (!best || area > best.area) best = { el: p, area };
+      }
+      return best?.el ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private ensureHighlightDomLayer(pageNum: number): HTMLDivElement | null {
+    try {
+      const existing = this.highlightDomLayerByPage.get(pageNum);
+      if (existing && existing.isConnected) return existing;
+    } catch {
+      /* ignore */
+    }
+    try {
+      const pageEl = this.container.querySelector(`.page[data-page-number="${pageNum}"]`) as HTMLElement | null;
+      if (!pageEl) return null;
+      // Create a dedicated layer that sits UNDER the pdf.js textLayer.
+      const layer = document.createElement("div");
+      layer.className = "divera-highlight-layer";
+      layer.style.position = "absolute";
+      layer.style.left = "0";
+      layer.style.top = "0";
+      layer.style.width = "100%";
+      layer.style.height = "100%";
+      layer.style.pointerEvents = "none";
+      // Force behind textLayer regardless of pdf.js defaults.
+      layer.style.zIndex = "0";
+      layer.style.mixBlendMode = "multiply";
+      // Make sure the page itself is a positioning context.
+      try {
+        const pos = window.getComputedStyle(pageEl).position;
+        if (!pos || pos === "static") pageEl.style.position = "relative";
+      } catch {
+        /* ignore */
+      }
+
+      const textLayer = pageEl.querySelector(".textLayer") as HTMLElement | null;
+      if (textLayer && textLayer.parentElement === pageEl) {
+        pageEl.insertBefore(layer, textLayer);
+        // Ensure text is always above.
+        try {
+          (textLayer.style as any).zIndex = "2";
+        } catch {
+          /* ignore */
+        }
+      } else {
+        pageEl.appendChild(layer);
+      }
+      this.highlightDomLayerByPage.set(pageNum, layer);
+      return layer;
+    } catch {
+      return null;
+    }
+  }
+
+  private removeHighlightDomById(id: string) {
+    try {
+      const el = this.highlightDomById.get(id);
+      if (el) el.remove();
+    } catch {
+      /* ignore */
+    }
+    this.highlightDomById.delete(id);
+  }
+
+  private upsertHighlightDomFromRectNorm(params: {
+    pageNum: number;
+    id: string;
+    rectNorm: any;
+    color: string;
+    opacity: number;
+  }) {
+    const { pageNum, id, rectNorm, color, opacity } = params;
+    const layer = this.ensureHighlightDomLayer(pageNum);
+    if (!layer) return;
+    const pageEl = this.container.querySelector(`.page[data-page-number="${pageNum}"]`) as HTMLElement | null;
+    if (!pageEl) return;
+    // IMPORTANT:
+    // Absolutely positioned children are positioned relative to the *padding edge* of the page element,
+    // not the border-box. So we must use clientWidth/clientHeight and clientLeft/clientTop for alignment.
+    const pageW = Math.max(1, Number(pageEl.clientWidth || 1) || 1);
+    const pageH = Math.max(1, Number(pageEl.clientHeight || 1) || 1);
+
+    const rn = rectNorm || {};
+    // Our highlight rects are stored as normalized (v=2).
+    let x = Number(rn.x || 0) * pageW;
+    let y = Number(rn.y || 0) * pageH;
+    let w = Number(rn.width || 0) * pageW;
+    let h = Number(rn.height || 0) * pageH;
+
+    // Clamp to page
+    x = Math.max(0, Math.min(pageW, x));
+    y = Math.max(0, Math.min(pageH, y));
+    w = Math.max(0, Math.min(pageW - x, w));
+    h = Math.max(0, Math.min(pageH - y, h));
+    if (w <= 0 || h <= 0) return;
+
+    let el = this.highlightDomById.get(id);
+    if (!el || !el.isConnected) {
+      el = document.createElement("div");
+      el.dataset.annId = id;
+      el.dataset.pageNum = String(pageNum);
+      el.style.position = "absolute";
+      el.style.pointerEvents = "none";
+      // Slight rounding looks nicer for highlighter blocks.
+      el.style.borderRadius = "2px";
+      layer.appendChild(el);
+      this.highlightDomById.set(id, el);
+    } else if (el.parentElement !== layer) {
+      try {
+        layer.appendChild(el);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    el.style.width = `${w}px`;
+    el.style.height = `${h}px`;
+    el.style.background = color;
+    el.style.opacity = `${Math.min(1, Math.max(0.05, Number(opacity) || 0.35))}`;
+  }
+
+  private upsertHighlightDomFromRectsNorm(params: {
+    pageNum: number;
+    id: string;
+    rectsNorm: any[];
+    color: string;
+    opacity: number;
+  }) {
+    const { pageNum, id, rectsNorm, color, opacity } = params;
+    const layer = this.ensureHighlightDomLayer(pageNum);
+    if (!layer) return;
+    const pageEl = this.container.querySelector(`.page[data-page-number="${pageNum}"]`) as HTMLElement | null;
+    if (!pageEl) return;
+    const pageW = Math.max(1, Number(pageEl.clientWidth || 1) || 1);
+    const pageH = Math.max(1, Number(pageEl.clientHeight || 1) || 1);
+    const list = Array.isArray(rectsNorm) ? rectsNorm : [];
+    if (list.length === 0) return;
+
+    // Convert to px + compute union box
+    const rectsPx: Array<{ x: number; y: number; width: number; height: number }> = [];
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const rn of list) {
+      if (!rn || typeof rn !== "object") continue;
+      let x = Number(rn.x || 0) * pageW;
+      let y = Number(rn.y || 0) * pageH;
+      let w = Number(rn.width || 0) * pageW;
+      let h = Number(rn.height || 0) * pageH;
+      x = Math.max(0, Math.min(pageW, x));
+      y = Math.max(0, Math.min(pageH, y));
+      w = Math.max(0, Math.min(pageW - x, w));
+      h = Math.max(0, Math.min(pageH - y, h));
+      if (w <= 0 || h <= 0) continue;
+      rectsPx.push({ x, y, width: w, height: h });
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + w);
+      maxY = Math.max(maxY, y + h);
+    }
+    if (rectsPx.length === 0) return;
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return;
+
+    let wrapper = this.highlightDomById.get(id);
+    if (!wrapper || !wrapper.isConnected) {
+      wrapper = document.createElement("div");
+      wrapper.dataset.annId = id;
+      wrapper.dataset.pageNum = String(pageNum);
+      wrapper.style.position = "absolute";
+      wrapper.style.pointerEvents = "none";
+      layer.appendChild(wrapper);
+      this.highlightDomById.set(id, wrapper);
+    } else if (wrapper.parentElement !== layer) {
+      try {
+        layer.appendChild(wrapper);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    // Union box defines the wrapper bounds (for selection/hit-testing).
+    const ux = Math.max(0, Math.min(pageW, minX));
+    const uy = Math.max(0, Math.min(pageH, minY));
+    const uw = Math.max(1, Math.min(pageW - ux, maxX - minX));
+    const uh = Math.max(1, Math.min(pageH - uy, maxY - minY));
+    wrapper.style.left = `${ux}px`;
+    wrapper.style.top = `${uy}px`;
+    wrapper.style.width = `${uw}px`;
+    wrapper.style.height = `${uh}px`;
+
+    // Rebuild children
+    try {
+      while (wrapper.firstChild) wrapper.removeChild(wrapper.firstChild);
+    } catch {
+      /* ignore */
+    }
+    const a = Math.min(1, Math.max(0.05, Number(opacity) || 0.35));
+    for (const r of rectsPx) {
+      const seg = document.createElement("div");
+      seg.style.position = "absolute";
+      seg.style.left = `${r.x - ux}px`;
+      seg.style.top = `${r.y - uy}px`;
+      seg.style.width = `${r.width}px`;
+      seg.style.height = `${r.height}px`;
+      seg.style.background = color;
+      seg.style.opacity = `${a}`;
+      seg.style.borderRadius = "2px";
+      wrapper.appendChild(seg);
+    }
+  }
+
+  private refreshHighlightDomForPage(pageNum: number) {
+    const layer = this.ensureHighlightDomLayer(pageNum);
+    if (!layer) return;
+    const list = this.annotations[pageNum] || [];
+    const keep = new Set<string>();
+    for (const ann of list) {
+      if (!ann || ann.type !== "highlight") continue;
+      const d = ann.data || {};
+      keep.add(ann.id);
+      if (Array.isArray(d.rectsNorm) && d.rectsNorm.length) {
+        this.upsertHighlightDomFromRectsNorm({
+          pageNum,
+          id: ann.id,
+          rectsNorm: d.rectsNorm,
+          color: typeof d.color === "string" ? d.color : this.highlightSettings.color,
+          opacity: typeof d.opacity === "number" ? d.opacity : this.highlightSettings.opacity,
+        });
+      } else if (d.rectNorm) {
+        this.upsertHighlightDomFromRectNorm({
+          pageNum,
+          id: ann.id,
+          rectNorm: d.rectNorm,
+          color: typeof d.color === "string" ? d.color : this.highlightSettings.color,
+          opacity: typeof d.opacity === "number" ? d.opacity : this.highlightSettings.opacity,
+        });
+      } else {
+        // no rect => skip
+        keep.delete(ann.id);
+      }
+    }
+
+    // Remove stale DOM nodes for this page
+    for (const [id, el] of Array.from(this.highlightDomById.entries())) {
+      if ((el?.dataset?.pageNum || "") !== String(pageNum)) continue;
+      if (keep.has(id)) continue;
+      this.removeHighlightDomById(id);
+    }
+  }
+
+  private refreshHighlightDomAllPages() {
+    for (const pageNum of this.pageMetrics.keys()) {
+      this.refreshHighlightDomForPage(pageNum);
+    }
+  }
+
+  private applyHighlightsFromNativeSelection() {
+    try {
+      const sel = window.getSelection?.();
+      if (!sel || sel.rangeCount <= 0) return;
+      if (sel.isCollapsed) return;
+
+      const range = sel.getRangeAt(0);
+      const common = range.commonAncestorContainer;
+      const commonEl =
+        (common && (common as any).nodeType === 1 ? (common as any as HTMLElement) : (common as any)?.parentElement) || null;
+      if (!commonEl || !this.container.contains(commonEl)) return;
+
+      const clientRects = Array.from(range.getClientRects?.() || []);
+      if (!clientRects.length) return;
+
+      const perPage = new Map<number, Array<{ x: number; y: number; width: number; height: number }>>();
+
+      // Use the actual selection rects so partial-word selections work.
+      // (Span-based highlighting will often expand to the whole word/span.)
+      for (const rr of clientRects) {
+        const w = Number((rr as any).width || 0);
+        const h = Number((rr as any).height || 0);
+        if (!Number.isFinite(w) || !Number.isFinite(h) || w < 0.5 || h < 0.5) continue;
+
+        const pageEl = this.findPageElementForClientRect(rr as any);
+        if (!pageEl) continue;
+        const pageNum = Number(pageEl.getAttribute("data-page-number") || (pageEl as any).dataset?.pageNumber || "");
+        if (!Number.isFinite(pageNum) || pageNum <= 0) continue;
+
+        const pageW = Math.max(1, Number((pageEl as any).clientWidth || 1) || 1);
+        const pageH = Math.max(1, Number((pageEl as any).clientHeight || 1) || 1);
+        const pageBox = pageEl.getBoundingClientRect();
+        const baseLeft = pageBox.left + ((pageEl as any).clientLeft || 0);
+        const baseTop = pageBox.top + ((pageEl as any).clientTop || 0);
+
+        // Try to align height to the nearest text span (visual consistency),
+        // but keep horizontal bounds from the actual selection rect.
+        let yTop = (rr as any).top;
+        let yH = h;
+        try {
+          const cx = (rr as any).left + w / 2;
+          const cy = (rr as any).top + h / 2;
+          const el = document.elementFromPoint(cx, cy) as HTMLElement | null;
+          const span = el?.closest?.(".textLayer span") as HTMLElement | null;
+          if (span) {
+            const sr = span.getBoundingClientRect();
+            if (sr && sr.height > 0.5) {
+              yTop = sr.top;
+              yH = sr.height;
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+
+        let x = (rr as any).left - baseLeft;
+        let y = yTop - baseTop;
+        let width = w;
+        let height = yH;
+
+        const padX = Math.min(2, width * 0.06);
+        const padY = Math.min(1.2, height * 0.08);
+        x -= padX;
+        y -= padY;
+        width += padX * 2;
+        height += padY * 2;
+
+        x = Math.max(0, Math.min(pageW, x));
+        y = Math.max(0, Math.min(pageH, y));
+        width = Math.max(0, Math.min(pageW - x, width));
+        height = Math.max(0, Math.min(pageH - y, height));
+        if (width <= 0 || height <= 0) continue;
+
+        const list = perPage.get(pageNum) ?? [];
+        list.push({ x, y, width, height });
+        perPage.set(pageNum, list);
+      }
+
+      if (perPage.size === 0) return;
+
+      // Clear selection UI immediately (so user sees our highlight, not browser selection).
+      try {
+        sel.removeAllRanges();
+      } catch {
+        /* ignore */
+      }
+
+      const pages = Array.from(perPage.keys()).sort((a, b) => a - b);
+      const createdByPage = new Map<number, Annotation[]>();
+      for (const pageNum of pages) {
+        const metrics = this.pageMetrics.get(pageNum);
+        if (!metrics) continue;
+        const pageEl = this.container.querySelector(`.page[data-page-number="${pageNum}"]`) as HTMLElement | null;
+        if (!pageEl) continue;
+        const pageW = Math.max(1, Number(pageEl.clientWidth || 1) || 1);
+        const pageH = Math.max(1, Number(pageEl.clientHeight || 1) || 1);
+        const merged = this.mergeHighlightRects(perPage.get(pageNum) || []);
+        if (!merged.length) continue;
+        const capped = merged.slice(0, 400); // safety cap (segments per page)
+
+        // ✅ One drag => one highlight annotation (per page), with multiple segments.
+        let minX = Number.POSITIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        let maxY = Number.NEGATIVE_INFINITY;
+        const rectsNorm: Array<{ x: number; y: number; width: number; height: number }> = [];
+        for (const r of capped) {
+          minX = Math.min(minX, r.x);
+          minY = Math.min(minY, r.y);
+          maxX = Math.max(maxX, r.x + r.width);
+          maxY = Math.max(maxY, r.y + r.height);
+          rectsNorm.push({
+            x: r.x / pageW,
+            y: r.y / pageH,
+            width: r.width / pageW,
+            height: r.height / pageH,
+          });
+        }
+        if (!rectsNorm.length) continue;
+        const id = this.newId("highlight");
+        const ann: Annotation = {
+          id,
+          type: "highlight",
+          page: pageNum,
+          data: {
+            v: 2,
+            kind: "multi",
+            // union (for helper fields/back-compat)
+            rectNorm: {
+              x: Math.max(0, minX / pageW),
+              y: Math.max(0, minY / pageH),
+              width: Math.max(0, (maxX - minX) / pageW),
+              height: Math.max(0, (maxY - minY) / pageH),
+            },
+            rectsNorm,
+            color: this.highlightSettings.color,
+            opacity: this.highlightSettings.opacity,
+          },
+          created_at: new Date().toISOString(),
+        };
+        createdByPage.set(pageNum, [ann]);
+      }
+      if (createdByPage.size === 0) return;
+
+      this.recordUndo(Array.from(createdByPage.keys()), () => {
+        for (const [pageNum, anns] of createdByPage.entries()) {
+          if (!this.annotations[pageNum]) this.annotations[pageNum] = [];
+          this.annotations[pageNum].push(...anns);
+        }
+      });
+      for (const [pageNum, anns] of createdByPage.entries()) {
+        const g = this.getOrCreatePageGroup(pageNum);
+        for (const ann of anns) this.loadAnnotationToGroup(ann, g, pageNum);
+      }
+
+      this.contentLayer?.batchDraw();
+      this.uiLayer?.batchDraw();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private collectTextLayerHighlightRects(params: {
+    pageNum: number;
+    selection: { x: number; y: number; width: number; height: number };
+    pageW: number;
+    pageH: number;
+  }): Array<{ x: number; y: number; width: number; height: number }> {
+    const { pageNum, selection, pageW, pageH } = params;
+    try {
+      const pageEl = this.container.querySelector(`.page[data-page-number="${pageNum}"]`) as HTMLElement | null;
+      if (!pageEl) return [];
+      const textLayer = pageEl.querySelector(".textLayer") as HTMLElement | null;
+      if (!textLayer) return [];
+
+      const pageBox = pageEl.getBoundingClientRect();
+      const spans = Array.from(textLayer.querySelectorAll("span")) as HTMLElement[];
+      const raw: Array<{ x: number; y: number; width: number; height: number }> = [];
+
+      for (const span of spans) {
+        const t = (span.textContent || "").trim();
+        if (!t) continue;
+        const r = span.getBoundingClientRect();
+        if (!Number.isFinite(r.width) || !Number.isFinite(r.height) || r.width < 0.5 || r.height < 0.5) continue;
+        const x = r.left - pageBox.left;
+        const y = r.top - pageBox.top;
+        const w = r.width;
+        const h = r.height;
+        if (!this.boxesIntersect(selection, { x, y, width: w, height: h })) continue;
+
+        // Slight padding looks more like a real highlighter stroke.
+        const padX = Math.min(2, w * 0.08);
+        const padY = Math.min(1.5, h * 0.12);
+        let hx = x - padX;
+        let hy = y - padY;
+        let hw = w + padX * 2;
+        let hh = h + padY * 2;
+
+        // Clamp to page bounds (page-local coords)
+        hx = Math.max(0, Math.min(pageW, hx));
+        hy = Math.max(0, Math.min(pageH, hy));
+        hw = Math.max(0, Math.min(pageW - hx, hw));
+        hh = Math.max(0, Math.min(pageH - hy, hh));
+        if (hw <= 0 || hh <= 0) continue;
+
+        raw.push({ x: hx, y: hy, width: hw, height: hh });
+      }
+
+      // Limit worst-case explosion (e.g. per-character spans on scanned PDFs).
+      if (raw.length > 1200) {
+        raw.length = 1200;
+      }
+
+      return this.mergeHighlightRects(raw);
+    } catch {
+      return [];
+    }
+  }
+
   private reloadAllAnnotations() {
     for (const g of this.pageGroups.values()) {
       try {
@@ -833,6 +1553,7 @@ export class KonvaAnnotationManager {
       }
     }
     this.contentLayer?.batchDraw();
+    this.refreshHighlightDomAllPages();
   }
 
   private loadAnnotationToGroup(ann: Annotation, group: Konva.Group, pageNum: number) {
@@ -914,119 +1635,34 @@ export class KonvaAnnotationManager {
       for (let i = 0; i < data.pointsNorm.length; i += 2) points.push((data.pointsNorm[i] || 0) * pageW, (data.pointsNorm[i + 1] || 0) * pageH);
       const line = new Konva.Line({
         points,
-        stroke: data.color || "rgba(255, 240, 102, 0.75)",
+        stroke: data.color || "#FFF066",
         strokeWidth: data.width || 12,
+        opacity: typeof data.opacity === "number" ? data.opacity : 0.75,
         lineCap: "round",
         lineJoin: "round",
         tension: 0.5,
-        globalCompositeOperation: "multiply",
+        globalCompositeOperation: "source-over",
         perfectDrawEnabled: false,
         shadowForStrokeEnabled: false,
         hitStrokeWidth: Math.max(44, (data.width || 12) * 10),
         id: ann.id,
-        draggable: true,
+        draggable: false,
         listening: true,
       });
-      line.on("dragend._persist", () => {
-        const offX = line.x();
-        const offY = line.y();
-        if (Math.abs(offX) < 0.5 && Math.abs(offY) < 0.5) return;
-        const metrics = this.pageMetrics.get(pageNum);
-        const pageW2 = metrics?.width || 1;
-        const pageH2 = metrics?.height || 1;
-        const dxNorm = offX / pageW2;
-        const dyNorm = offY / pageH2;
-        this.recordUndo([pageNum], () => {
-          const list = this.annotations[pageNum] || [];
-          const target = list.find((a) => a.id === ann.id);
-          if (!target) return;
-          const d = target.data || {};
-          if (d.v !== 2 || d.kind !== "stroke" || !Array.isArray(d.pointsNorm)) return;
-          const out: number[] = [];
-          for (let i = 0; i < d.pointsNorm.length; i += 2) {
-            out.push(Math.min(0.98, Math.max(0, (d.pointsNorm[i] || 0) + dxNorm)));
-            out.push(Math.min(0.98, Math.max(0, (d.pointsNorm[i + 1] || 0) + dyNorm)));
-          }
-          target.data = { ...(target.data || {}), pointsNorm: out };
-        });
-        try {
-          const pts = line.points();
-          const nextPts: number[] = [];
-          for (let i = 0; i < pts.length; i += 2) nextPts.push((pts[i] || 0) + offX, (pts[i + 1] || 0) + offY);
-          line.position({ x: 0, y: 0 });
-          line.points(nextPts);
-        } catch {
-          /* ignore */
-        }
-        try {
-          this.transformer?.forceUpdate?.();
-          this.updateSelectionHitRect();
-        } catch {
-          /* ignore */
-        }
-        this.contentLayer?.batchDraw();
-        this.uiLayer?.batchDraw();
-      });
+      // Legacy highlight strokes (kept for backward compatibility).
+      // New highlight behavior uses rectNorm + DOM layer behind text.
       group.add(line);
       return;
     }
 
     if (ann.type === "highlight" && data.rectNorm) {
-      const rect = new Konva.Rect({
-        x: (data.rectNorm.x || 0) * pageW,
-        y: (data.rectNorm.y || 0) * pageH,
-        width: (data.rectNorm.width || 0) * pageW,
-        height: (data.rectNorm.height || 0) * pageH,
-        fill: data.color || "rgba(255, 240, 102, 0.45)",
-        opacity: typeof data.opacity === "number" ? data.opacity : 1,
-        globalCompositeOperation: "multiply",
+      this.upsertHighlightDomFromRectNorm({
+        pageNum,
         id: ann.id,
-        draggable: true,
+        rectNorm: data.rectNorm,
+        color: typeof data.color === "string" ? data.color : this.highlightSettings.color,
+        opacity: typeof data.opacity === "number" ? data.opacity : this.highlightSettings.opacity,
       });
-      rect.on("dragstart._persist", () => {
-        try {
-          (rect as any)._dragStartX = rect.x();
-          (rect as any)._dragStartY = rect.y();
-        } catch {
-          /* ignore */
-        }
-      });
-      rect.on("dragend._persist", () => {
-        const sx = Number((rect as any)._dragStartX ?? rect.x());
-        const sy = Number((rect as any)._dragStartY ?? rect.y());
-        const dxPx = rect.x() - sx;
-        const dyPx = rect.y() - sy;
-        if (Math.abs(dxPx) < 0.5 && Math.abs(dyPx) < 0.5) return;
-        const metrics = this.pageMetrics.get(pageNum);
-        const pageW2 = metrics?.width || 1;
-        const pageH2 = metrics?.height || 1;
-        const dxNorm = dxPx / pageW2;
-        const dyNorm = dyPx / pageH2;
-        this.recordUndo([pageNum], () => {
-          const list = this.annotations[pageNum] || [];
-          const target = list.find((a) => a.id === ann.id);
-          if (!target) return;
-          const d = target.data || {};
-          if (!d.rectNorm) return;
-          target.data = {
-            ...(target.data || {}),
-            rectNorm: {
-              ...d.rectNorm,
-              x: Math.min(0.98, Math.max(0, Number(d.rectNorm.x || 0) + dxNorm)),
-              y: Math.min(0.98, Math.max(0, Number(d.rectNorm.y || 0) + dyNorm)),
-            },
-          };
-        });
-        try {
-          this.transformer?.forceUpdate?.();
-          this.updateSelectionHitRect();
-        } catch {
-          /* ignore */
-        }
-        this.contentLayer?.batchDraw();
-        this.uiLayer?.batchDraw();
-      });
-      group.add(rect);
       return;
     }
 
@@ -1399,6 +2035,27 @@ export class KonvaAnnotationManager {
           const next = shift ? Array.from(new Set([...this.selectedNodes, node])) : [node];
           this.setSelection(next);
         } else {
+          // If the pointer is over a DOM-based highlight, allow selecting it (for delete)
+          const hit = this.stageRectContainsDomHighlight(pos);
+          if (hit?.id && hit.rect) {
+            if (!shift) this.clearSelection();
+            const outline = new Konva.Rect({
+              id: hit.id,
+              x: hit.rect.x,
+              y: hit.rect.y,
+              width: Math.max(1, hit.rect.width),
+              height: Math.max(1, hit.rect.height),
+              name: "hl-outline",
+              strokeWidth: 0,
+              fill: "rgba(0,0,0,0.001)",
+              listening: false,
+            });
+            this.uiLayer?.add(outline);
+            const next = shift ? Array.from(new Set([...this.selectedNodes, outline])) : [outline];
+            this.setSelection(next);
+            this.uiLayer?.batchDraw();
+            return;
+          }
           // start marquee selection for mouse/pen
           this.isMarqueeSelecting = true;
           this.marqueeStart = { x: pos.x, y: pos.y };
@@ -1460,11 +2117,14 @@ export class KonvaAnnotationManager {
         return;
       }
 
-      // ink/highlight drawing
-      this.isDrawing = true;
-      this.currentPoints = [local.x, local.y];
-      const g = this.getOrCreatePageGroup(page);
+      // highlight mode uses native text selection (handled outside Konva)
+      if (this.currentMode === "highlight") return;
+
+      // ink drawing (freehand)
       if (this.currentMode === "ink") {
+        this.isDrawing = true;
+        this.currentPoints = [local.x, local.y];
+        const g = this.getOrCreatePageGroup(page);
         this.currentDrawing = new Konva.Line({
           points: [local.x, local.y],
           stroke: this.inkSettings.color,
@@ -1472,24 +2132,6 @@ export class KonvaAnnotationManager {
           lineCap: "round",
           lineJoin: "round",
           tension: 0.35,
-          perfectDrawEnabled: false,
-          shadowForStrokeEnabled: false,
-          listening: false,
-        });
-        g.add(this.currentDrawing);
-        this.contentLayer?.batchDraw();
-        return;
-      }
-      if (this.currentMode === "highlight") {
-        this.currentDrawing = new Konva.Line({
-          points: [local.x, local.y],
-          stroke: this.highlightSettings.color,
-          strokeWidth: this.highlightSettings.width,
-          opacity: this.highlightSettings.opacity,
-          lineCap: "round",
-          lineJoin: "round",
-          tension: 0.5,
-          globalCompositeOperation: "multiply",
           perfectDrawEnabled: false,
           shadowForStrokeEnabled: false,
           listening: false,
@@ -1725,8 +2367,41 @@ export class KonvaAnnotationManager {
             return false;
           }
         });
-        const next = additive ? Array.from(new Set([...this.selectedNodes, ...hit])) : hit;
+
+        // Also include DOM-based highlight rectangles (rectNorm) that intersect the marquee box.
+        const outlineNodes: Konva.Node[] = [];
+        try {
+          const existingIds = new Set((additive ? this.selectedNodes : []).map((n) => n?.id?.()).filter(Boolean) as string[]);
+          for (const [id, el] of Array.from(this.highlightDomById.entries())) {
+            if (!el || !el.isConnected) continue;
+            if (!id || existingIds.has(id)) continue;
+            const dr = el.getBoundingClientRect();
+            const stageRect = this.domRectToStageRect(dr);
+            if (!stageRect) continue;
+            if (!Konva.Util.haveIntersection(rect, stageRect as any)) continue;
+            const outline = new Konva.Rect({
+              id,
+              x: stageRect.x,
+              y: stageRect.y,
+              width: Math.max(1, stageRect.width),
+              height: Math.max(1, stageRect.height),
+              name: "hl-outline",
+              strokeWidth: 0,
+              fill: "rgba(0,0,0,0.001)",
+              listening: false,
+            });
+            this.uiLayer?.add(outline);
+            outlineNodes.push(outline);
+            existingIds.add(id);
+          }
+        } catch {
+          /* ignore */
+        }
+
+        const base = additive ? this.selectedNodes : [];
+        const next = Array.from(new Set([...base, ...hit, ...outlineNodes]));
         this.setSelection(next);
+        this.uiLayer?.batchDraw();
         return;
       }
 
@@ -1803,7 +2478,7 @@ export class KonvaAnnotationManager {
         return;
       }
 
-      // finalize ink/highlight
+      // finalize ink drawing
       if (!this.isDrawing || !this.activePage) return;
       const page = this.activePage;
       const m = this.pageMetrics.get(page);
@@ -1814,52 +2489,21 @@ export class KonvaAnnotationManager {
 
       if (!this.currentDrawing) return;
       const pts = this.currentPoints;
-      const id = this.newId(this.currentMode === "ink" ? "ink" : "highlight");
-
-      if (this.currentMode === "ink") {
-        const pointsNorm: number[] = [];
-        for (let i = 0; i < pts.length; i += 2) pointsNorm.push((pts[i] || 0) / pageW, (pts[i + 1] || 0) / pageH);
-        const ann: Annotation = {
-          id,
-          type: "ink",
-          page,
-          data: { v: 2, pointsNorm, color: this.inkSettings.color, width: this.inkSettings.width },
-          created_at: new Date().toISOString(),
-        };
-        this.recordUndo([page], () => {
-          if (!this.annotations[page]) this.annotations[page] = [];
-          this.annotations[page].push(ann);
-        });
-        this.currentDrawing.id(id);
-        try {
-          this.currentDrawing.listening(true);
-        } catch {
-          /* ignore */
-        }
-      } else if (this.currentMode === "highlight") {
-        // store as stroke
-        const pointsNorm: number[] = [];
-        for (let i = 0; i < pts.length; i += 2) pointsNorm.push((pts[i] || 0) / pageW, (pts[i + 1] || 0) / pageH);
-        const ann: Annotation = {
-          id,
-          type: "highlight",
-          page,
-          data: { v: 2, kind: "stroke", pointsNorm, color: this.highlightSettings.color, width: this.highlightSettings.width, opacity: this.highlightSettings.opacity },
-          created_at: new Date().toISOString(),
-        };
-        this.recordUndo([page], () => {
-          if (!this.annotations[page]) this.annotations[page] = [];
-          this.annotations[page].push(ann);
-        });
-        this.currentDrawing.id(id);
-        try {
-          this.currentDrawing.listening(true);
-        } catch {
-          /* ignore */
-        }
-      }
-
-      // finalize
+      const id = this.newId("ink");
+      const pointsNorm: number[] = [];
+      for (let i = 0; i < pts.length; i += 2) pointsNorm.push((pts[i] || 0) / pageW, (pts[i + 1] || 0) / pageH);
+      const ann: Annotation = {
+        id,
+        type: "ink",
+        page,
+        data: { v: 2, pointsNorm, color: this.inkSettings.color, width: this.inkSettings.width },
+        created_at: new Date().toISOString(),
+      };
+      this.recordUndo([page], () => {
+        if (!this.annotations[page]) this.annotations[page] = [];
+        this.annotations[page].push(ann);
+      });
+      this.currentDrawing.id(id);
       try {
         this.currentDrawing.listening(true);
       } catch {
@@ -1872,25 +2516,55 @@ export class KonvaAnnotationManager {
   }
 
   private eraseAt(pos: { x: number; y: number }) {
-    const raw = this.stage?.getIntersection(pos);
+    // 1) Try erasing Konva-rendered annotations (ink/text/legacy highlight stroke)
+    const raw = this.stage?.getIntersection(pos) as any;
     const node = raw ? (this.resolveAnnotationNode(raw as any) || (raw as any)) : null;
-    if (!node) return;
-    const id = node.id();
-    if (!id) return;
-    if (this.lastErasedId === id) return;
-    this.lastErasedId = id;
-    const page = this.getPageForNode(node);
-    if (!page) return;
-    const list = this.annotations[page] || [];
-    const idx = list.findIndex((a) => a.id === id);
+    if (node) {
+      const id = node.id?.();
+      if (!id) return;
+      if (this.lastErasedId === id) return;
+      this.lastErasedId = id;
+      const page = this.getPageForNode(node);
+      if (!page) return;
+      const list = this.annotations[page] || [];
+      const idx = list.findIndex((a) => a.id === id);
+      if (idx < 0) return;
+      this.recordUndo([page], () => {
+        list.splice(idx, 1);
+        this.annotations[page] = list;
+        node.destroy();
+      });
+      this.contentLayer?.batchDraw();
+      this.uiLayer?.batchDraw();
+      // If it was a DOM highlight (unlikely here), ensure cleanup too.
+      this.removeHighlightDomById(id);
+      return;
+    }
+
+    // 2) Try erasing DOM-rendered highlight rectangles (behind textLayer)
+    const hit = this.stageRectContainsDomHighlight(pos);
+    if (!hit?.id) return;
+    const id = hit.id;
+    // Find which page list contains this id
+    let pageNum: number | null = null;
+    for (const [pStr, list] of Object.entries(this.annotations)) {
+      const p = Number(pStr);
+      if (!Number.isFinite(p)) continue;
+      if ((list || []).some((a) => a?.id === id)) {
+        pageNum = p;
+        break;
+      }
+    }
+    if (!pageNum) return;
+    const list = this.annotations[pageNum] || [];
+    const idx = list.findIndex((a) => a?.id === id);
     if (idx < 0) return;
-    this.recordUndo([page], () => {
+    this.recordUndo([pageNum], () => {
       list.splice(idx, 1);
-      this.annotations[page] = list;
-      node.destroy();
+      this.annotations[pageNum!] = list;
     });
-    this.contentLayer?.batchDraw();
-    this.uiLayer?.batchDraw();
+    this.removeHighlightDomById(id);
+    this.refreshHighlightDomForPage(pageNum);
   }
 
   private openTextBoxEditorForId(pageNum: number, id: string) {

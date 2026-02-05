@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 from urllib.parse import quote
 import io
+import time
 
 from ..mariadb.database import SessionLocal
 from ..mariadb.models import FileAsset, Review, ReviewComment, User, Project
@@ -15,10 +16,436 @@ from .auth import get_current_user
 from ..minio.service import upload_stream, presign_download_url, upload_json, get_json, DEFAULT_BUCKET
 from ..minio.client import ensure_bucket, minio_client
 from ..schemas import PDFAnnotation, PDFAnnotationsData, PDFAnnotationCreate
+from ..utils.storage_derivation import derive_annotations_key, derive_baked_key
+from minio.error import S3Error
 import json
 import uuid
+import os
+from functools import lru_cache
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
+
+_MISSING_SIZE = -1
+_OBJECT_SIZE_CACHE: dict[str, tuple[int, float]] = {}
+_OBJECT_SIZE_CACHE_TTL_SECONDS = 300  # 5 minutes
+_OBJECT_MISS_TTL_SECONDS = 10  # short TTL for missing objects
+
+
+def _probe_object_size_cached(object_key: str) -> int | None:
+    """
+    Best-effort object size probe with an in-process TTL cache.
+
+    Why:
+    - pdf.js can issue MANY Range requests; `stat_object` per request is expensive.
+    - We only need size to serve Range responses correctly.
+
+    Returns:
+    - int size (>=0) when known
+    - None when object doesn't exist or size can't be determined
+    """
+    key = (object_key or "").strip()
+    if not key:
+        return None
+
+    now = time.time()
+    cached = _OBJECT_SIZE_CACHE.get(key)
+    if cached and cached[1] > now:
+        size = cached[0]
+        return None if size == _MISSING_SIZE else size
+
+    try:
+        stat = minio_client.stat_object(bucket_name=DEFAULT_BUCKET, object_name=key)
+        size = int(getattr(stat, "size", 0) or 0)
+        _OBJECT_SIZE_CACHE[key] = (size, now + _OBJECT_SIZE_CACHE_TTL_SECONDS)
+        return size
+    except S3Error as e:
+        if e.code in ("NoSuchKey", "NoSuchObject"):
+            _OBJECT_SIZE_CACHE[key] = (_MISSING_SIZE, now + _OBJECT_MISS_TTL_SECONDS)
+            return None
+        if e.code == "AccessDenied":
+            # Treat as "unknown" (do not raise) to avoid breaking review UI.
+            _OBJECT_SIZE_CACHE[key] = (_MISSING_SIZE, now + _OBJECT_MISS_TTL_SECONDS)
+            return None
+        raise
+
+
+def _parse_color_to_rgb01(color: str | None) -> tuple[float, float, float] | None:
+    """
+    Accepts common formats seen in frontend payload:
+    - "#RRGGBB"
+    - "rgba(r,g,b,a)" / "rgb(r,g,b)"
+    Returns (r,g,b) as floats in 0..1.
+    """
+    s = (color or "").strip()
+    if not s:
+        return None
+    if s.startswith("#") and len(s) == 7:
+        try:
+            r = int(s[1:3], 16)
+            g = int(s[3:5], 16)
+            b = int(s[5:7], 16)
+            return (r / 255.0, g / 255.0, b / 255.0)
+        except Exception:
+            return None
+    if s.lower().startswith("rgb"):
+        try:
+            inner = s[s.find("(") + 1 : s.rfind(")")]
+            parts = [p.strip() for p in inner.split(",")]
+            if len(parts) < 3:
+                return None
+            r = float(parts[0])
+            g = float(parts[1])
+            b = float(parts[2])
+            return (max(0.0, min(1.0, r / 255.0)), max(0.0, min(1.0, g / 255.0)), max(0.0, min(1.0, b / 255.0)))
+        except Exception:
+            return None
+    return None
+
+
+def _clamp01(v: float) -> float:
+    try:
+        x = float(v)
+    except Exception:
+        return 0.0
+    return max(0.0, min(1.0, x))
+
+
+def _read_object_bytes(object_key: str) -> bytes:
+    ensure_bucket(DEFAULT_BUCKET)
+    resp = minio_client.get_object(bucket_name=DEFAULT_BUCKET, object_name=object_key)
+    try:
+        return resp.read()
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+        try:
+            resp.release_conn()
+        except Exception:
+            pass
+
+
+@lru_cache(maxsize=1)
+def _get_bake_fontfile() -> str | None:
+    """
+    Return a TTF/OTF/TTC font file path to use for baking Unicode text.
+
+    Why:
+    - PyMuPDF base14 fonts (e.g. helv) do not contain Hangul glyphs.
+    - If we bake with a non-Unicode font, text becomes '???' in the output PDF.
+
+    Configuration:
+    - Set env var `PDF_BAKE_FONT_FILE` to an absolute font path to override.
+    """
+    env = (os.getenv("PDF_BAKE_FONT_FILE") or "").strip()
+    if env and os.path.isfile(env):
+        return env
+
+    # Common font locations (best-effort). We intentionally do not require these to exist.
+    candidates = [
+        # Windows (Korean)
+        r"C:\Windows\Fonts\malgun.ttf",       # Malgun Gothic
+        r"C:\Windows\Fonts\malgunsl.ttf",
+        r"C:\Windows\Fonts\batang.ttc",
+        # WSL (Windows fonts mounted under /mnt/c)
+        "/mnt/c/Windows/Fonts/malgun.ttf",
+        "/mnt/c/Windows/Fonts/malgunsl.ttf",
+        "/mnt/c/Windows/Fonts/batang.ttc",
+        # macOS
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/Library/Fonts/AppleGothic.ttf",
+        # Linux (Noto / common paths)
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJKkr-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansKR-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansKR-Regular.otf",
+        "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+    ]
+    for p in candidates:
+        try:
+            if p and os.path.isfile(p):
+                return p
+        except Exception:
+            continue
+    return None
+
+
+def _register_bake_font(doc, *, fontfile: str | None) -> str:
+    """
+    Register a Unicode-capable font in the PDF document and return the fontname to use.
+    Falls back to a built-in CJK font ('korea') if registration fails / no fontfile.
+    """
+    if not fontfile:
+        # PyMuPDF bundles a CJK-capable font alias. This prevents Hangul from becoming "???" even
+        # in minimal Linux containers with no system fonts installed.
+        return "korea"
+
+    # Pick a stable internal name. If it already exists, insert_font is typically idempotent.
+    fontname = "bake_unicode"
+    try:
+        # PyMuPDF modern API
+        doc.insert_font(fontname=fontname, fontfile=fontfile)
+        return fontname
+    except Exception:
+        pass
+    try:
+        # Older PyMuPDF API
+        doc.insertFont(fontname=fontname, fontfile=fontfile)
+        return fontname
+    except Exception:
+        return "korea"
+
+
+def _build_baked_pdf_bytes(*, original_pdf_bytes: bytes, annotations: list[dict]) -> bytes:
+    """
+    Bake Konva annotations into a PDF.
+
+    Notes:
+    - This uses normalized coordinates (v=2) when available.
+    - It is intentionally best-effort: unsupported shapes are skipped rather than failing the request.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except Exception as e:
+        raise RuntimeError("PyMuPDF (fitz) is required for baking PDFs. Please install PyMuPDF.") from e
+
+    doc = fitz.open(stream=original_pdf_bytes, filetype="pdf")
+    # Register a font that can render Hangul/Unicode so baked text doesn't turn into "???".
+    bake_fontfile = _get_bake_fontfile()
+    bake_fontname = _register_bake_font(doc, fontfile=bake_fontfile)
+    try:
+        for ann in annotations:
+            try:
+                page_num = int(ann.get("page") or 1)
+            except Exception:
+                continue
+            if page_num <= 0 or page_num > doc.page_count:
+                continue
+            page = doc.load_page(page_num - 1)
+            rect = page.rect
+            page_w = float(rect.width or 1.0)
+            page_h = float(rect.height or 1.0)
+
+            payload = None
+            try:
+                payload = json.loads(ann.get("text") or "{}")
+            except Exception:
+                payload = None
+            if not isinstance(payload, dict):
+                continue
+
+            typ = payload.get("type")
+            data = payload.get("data") or {}
+            if not isinstance(data, dict):
+                data = {}
+
+            v = data.get("v")
+
+            # ---------- ink ----------
+            if typ == "ink":
+                pts_norm = data.get("pointsNorm") if v == 2 else None
+                if isinstance(pts_norm, list) and len(pts_norm) >= 4:
+                    pts = []
+                    for i in range(0, len(pts_norm) - 1, 2):
+                        x = float(pts_norm[i] or 0.0) * page_w
+                        y = float(pts_norm[i + 1] or 0.0) * page_h
+                        pts.append(fitz.Point(x, y))
+                    rgb = _parse_color_to_rgb01(data.get("color")) or (0.07, 0.09, 0.12)  # gray-900
+                    width_norm = data.get("widthNorm")
+                    if isinstance(width_norm, (int, float)):
+                        width = max(0.25, float(width_norm) * page_h)
+                    else:
+                        # fallback: interpret width as "pt-ish"
+                        width = max(0.6, float(data.get("width") or 2))
+                    try:
+                        page.draw_polyline(pts, color=rgb, width=width)
+                    except Exception:
+                        # last resort: draw segments
+                        for a, b in zip(pts, pts[1:]):
+                            try:
+                                page.draw_line(a, b, color=rgb, width=width)
+                            except Exception:
+                                pass
+                continue
+
+            # ---------- highlight ----------
+            if typ == "highlight":
+                rgb = _parse_color_to_rgb01(data.get("color")) or (1.0, 0.94, 0.40)
+                opacity = _clamp01(float(data.get("opacity") or 0.75))
+                kind = data.get("kind")
+                if v == 2 and kind == "stroke" and isinstance(data.get("pointsNorm"), list):
+                    pts_norm = data.get("pointsNorm") or []
+                    if len(pts_norm) >= 4:
+                        pts = []
+                        for i in range(0, len(pts_norm) - 1, 2):
+                            x = float(pts_norm[i] or 0.0) * page_w
+                            y = float(pts_norm[i + 1] or 0.0) * page_h
+                            pts.append(fitz.Point(x, y))
+                        width_norm = data.get("widthNorm")
+                        if isinstance(width_norm, (int, float)):
+                            width = max(0.5, float(width_norm) * page_h)
+                        else:
+                            width = max(1.0, float(data.get("width") or 12))
+                        try:
+                            # Draw highlight UNDER the existing page content so text stays crisp.
+                            # (PDF rendering: later drawings overlay earlier content.)
+                            page.draw_polyline(pts, color=rgb, width=width, stroke_opacity=opacity, overlay=False)
+                        except TypeError:
+                            try:
+                                page.draw_polyline(pts, color=rgb, width=width, stroke_opacity=opacity)
+                            except TypeError:
+                                page.draw_polyline(pts, color=rgb, width=width)
+                    continue
+                # Multi-rect highlight (one drag => multiple segments)
+                if isinstance(data.get("rectsNorm"), list):
+                    try:
+                        for rn in data.get("rectsNorm") or []:
+                            if not isinstance(rn, dict):
+                                continue
+                            x = float(rn.get("x") or 0.0) * page_w
+                            y = float(rn.get("y") or 0.0) * page_h
+                            w = float(rn.get("width") or 0.0) * page_w
+                            h = float(rn.get("height") or 0.0) * page_h
+                            box = fitz.Rect(x, y, x + max(0.0, w), y + max(0.0, h))
+                            try:
+                                # Underlay highlight so it doesn't wash out text.
+                                page.draw_rect(box, color=None, fill=rgb, fill_opacity=opacity, overlay=False)
+                            except TypeError:
+                                try:
+                                    page.draw_rect(box, color=None, fill=rgb, fill_opacity=opacity)
+                                except TypeError:
+                                    page.draw_rect(box, color=None, fill=rgb)
+                    except Exception:
+                        pass
+                    continue
+
+                if isinstance(data.get("rectNorm"), dict):
+                    rn = data.get("rectNorm") or {}
+                    x = float(rn.get("x") or 0.0) * page_w
+                    y = float(rn.get("y") or 0.0) * page_h
+                    w = float(rn.get("width") or 0.0) * page_w
+                    h = float(rn.get("height") or 0.0) * page_h
+                    box = fitz.Rect(x, y, x + max(0.0, w), y + max(0.0, h))
+                    try:
+                        page.draw_rect(box, color=None, fill=rgb, fill_opacity=opacity, overlay=False)
+                    except TypeError:
+                        try:
+                            page.draw_rect(box, color=None, fill=rgb, fill_opacity=opacity)
+                        except TypeError:
+                            page.draw_rect(box, color=None, fill=rgb)
+                    continue
+                continue
+
+            # ---------- freetext ----------
+            if typ == "freetext":
+                rgb = _parse_color_to_rgb01(data.get("color")) or (0.07, 0.09, 0.12)
+                font = bake_fontname or "helv"
+                if v == 2 and data.get("kind") == "textbox":
+                    x = float(data.get("xNorm") or 0.0) * page_w
+                    y = float(data.get("yNorm") or 0.0) * page_h
+                    w = float(data.get("widthNorm") or 0.25) * page_w
+                    h = float(data.get("heightNorm") or 0.12) * page_h
+                    fs = float(data.get("fontSizeNorm") or (16.0 / max(1.0, page_h))) * page_h
+                    text = str(data.get("text") or "")
+                    # richtext runs: fallback to plain concatenation if present
+                    if not text and isinstance(data.get("runs"), list):
+                        try:
+                            text = "".join([str(r.get("text") or "") for r in (data.get("runs") or []) if isinstance(r, dict)])
+                        except Exception:
+                            text = ""
+                    box = fitz.Rect(x, y, x + max(40.0, w), y + max(20.0, h))
+                    try:
+                        # Prefer passing `fontfile` directly to guarantee Unicode glyphs are embedded.
+                        if bake_fontfile:
+                            try:
+                                page.insert_textbox(
+                                    box,
+                                    text,
+                                    fontsize=max(6.0, fs),
+                                    fontname=font,
+                                    fontfile=bake_fontfile,
+                                    color=rgb,
+                                    align=0,
+                                )
+                            except TypeError:
+                                page.insert_textbox(box, text, fontsize=max(6.0, fs), fontname=font, color=rgb, align=0)
+                        else:
+                            page.insert_textbox(box, text, fontsize=max(6.0, fs), fontname=font, color=rgb, align=0)
+                    except Exception:
+                        # fallback: insert at top-left
+                        try:
+                            if bake_fontfile:
+                                try:
+                                    page.insert_text(
+                                        fitz.Point(x, y + max(6.0, fs)),
+                                        text,
+                                        fontsize=max(6.0, fs),
+                                        fontname=font,
+                                        fontfile=bake_fontfile,
+                                        color=rgb,
+                                    )
+                                except TypeError:
+                                    page.insert_text(
+                                        fitz.Point(x, y + max(6.0, fs)),
+                                        text,
+                                        fontsize=max(6.0, fs),
+                                        fontname=font,
+                                        color=rgb,
+                                    )
+                            else:
+                                page.insert_text(
+                                    fitz.Point(x, y + max(6.0, fs)),
+                                    text,
+                                    fontsize=max(6.0, fs),
+                                    fontname=font,
+                                    color=rgb,
+                                )
+                        except Exception:
+                            pass
+                    continue
+
+                # plain freetext (and richtext fallback)
+                x = float(data.get("xNorm") or 0.0) * page_w if v == 2 else float(data.get("x") or 0.0)
+                y = float(data.get("yNorm") or 0.0) * page_h if v == 2 else float(data.get("y") or 0.0)
+                fs = float(data.get("fontSizeNorm") or (16.0 / max(1.0, page_h))) * page_h if v == 2 else float(data.get("fontSize") or 16.0)
+                text = str(data.get("text") or "")
+                if not text and isinstance(data.get("runs"), list):
+                    try:
+                        text = "".join([str(r.get("text") or "") for r in (data.get("runs") or []) if isinstance(r, dict)])
+                    except Exception:
+                        text = ""
+                try:
+                    if bake_fontfile:
+                        try:
+                            page.insert_text(
+                                fitz.Point(x, y + max(6.0, fs)),
+                                text,
+                                fontsize=max(6.0, fs),
+                                fontname=font,
+                                fontfile=bake_fontfile,
+                                color=rgb,
+                            )
+                        except TypeError:
+                            page.insert_text(
+                                fitz.Point(x, y + max(6.0, fs)),
+                                text,
+                                fontsize=max(6.0, fs),
+                                fontname=font,
+                                color=rgb,
+                            )
+                    else:
+                        page.insert_text(fitz.Point(x, y + max(6.0, fs)), text, fontsize=max(6.0, fs), fontname=font, color=rgb)
+                except Exception:
+                    pass
+                continue
+            # unknown types are ignored
+
+        baked = doc.tobytes()
+        return baked
+    finally:
+        doc.close()
 
 
 def get_db():
@@ -49,9 +476,65 @@ def get_file_view_url(
     # 검토 권한 확인
     ensure_can_manage_project(user, project)
 
-    # 백엔드 프록시 URL 반환 (CORS 문제 해결)
-    # 프론트엔드의 baseURL이 /api이므로 /reviews만 반환
-    return {"url": f"/reviews/files/{file_id}/proxy", "expires_minutes": 60}
+    # IMPORTANT:
+    # Review viewer must render:
+    # - original PDF as the base, and
+    # - overlay annotations loaded from JSON.
+    #
+    # Baked PDF is intended for "read-only baked view" (e.g. from upload page status click),
+    # and is served via /inline-url (presigned) or /proxy?variant=baked when explicitly requested.
+    return {"url": f"/reviews/files/{file_id}/proxy?variant=original", "expires_minutes": 60}
+
+
+@router.get("/files/{file_id}/inline-url")
+def get_file_inline_url(
+    file_id: int,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """
+    새 탭/새 창에서 열 수 있는 presigned URL을 반환합니다.
+    (네비게이션은 커스텀 헤더를 붙일 수 없으므로 /proxy 대신 사용)
+
+    - baked PDF(__baked)가 있으면 baked를 우선 반환
+    - 없으면 원본 PDF를 반환
+    """
+    user = get_current_user(db, x_user_id)
+
+    file_asset = db.query(FileAsset).filter(FileAsset.id == file_id).first()
+    if not file_asset:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    project = file_asset.project
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    ensure_can_manage_project(user, project)
+
+    ensure_bucket(DEFAULT_BUCKET)
+
+    preferred_key = file_asset.file_key
+    baked_key = derive_baked_key(file_asset.file_key)
+    try:
+        minio_client.stat_object(bucket_name=DEFAULT_BUCKET, object_name=baked_key)
+        preferred_key = baked_key
+    except S3Error as e:
+        # If it doesn't exist (or we can't probe it), fall back to original.
+        if e.code not in ("NoSuchKey", "NoSuchObject", "AccessDenied"):
+            raise
+
+    try:
+        url = presign_download_url(
+            object_key=preferred_key,
+            expires_minutes=60 * 12,
+            download_filename=file_asset.original_name,
+            content_type=file_asset.mime_type or "application/pdf",
+            inline=True,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"url": url, "expires_minutes": 60 * 12}
 
 
 @router.get("/files/{file_id}/proxy")
@@ -60,6 +543,7 @@ def proxy_file_for_viewer(
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
     range_header: str | None = Header(default=None, alias="Range"),
+    variant: str | None = Query(default=None, description="PDF variant: baked|original"),
 ):
     """파일을 프록시하여 CORS 문제를 해결합니다."""
     user = get_current_user(db, x_user_id)
@@ -79,49 +563,63 @@ def proxy_file_for_viewer(
         # Bucket existence should be ensured at startup / first use; cache prevents per-request MinIO calls.
         ensure_bucket(DEFAULT_BUCKET)
 
+        # Decide which object to stream.
+        # - `variant` is supplied by /view-url so we don't need to probe existence here.
+        # - Still, we may need size for Range responses; use cached probe as fallback.
+        preferred_key = file_asset.file_key
+        if (variant or "").lower() == "baked":
+            preferred_key = derive_baked_key(file_asset.file_key)
+
         # Avoid a MinIO stat call for every Range request:
-        # pdf.js can issue MANY small range requests while loading.
-        # Prefer DB-cached size when available; fall back to stat_object only when needed.
-        total_size = int(file_asset.size or 0)
-        if total_size <= 0:
-            stat = minio_client.stat_object(bucket_name=DEFAULT_BUCKET, object_name=file_asset.file_key)
-            total_size = int(getattr(stat, "size", 0) or 0)
+        # Prefer DB-cached size when available; fall back to cached stat probe only when needed.
+        total_size: int | None = None
+        if preferred_key == file_asset.file_key:
+            try:
+                v = int(file_asset.size or 0)
+                if v > 0:
+                    total_size = v
+            except Exception:
+                total_size = None
+        if total_size is None:
+            total_size = _probe_object_size_cached(preferred_key)
 
         # Range 요청 지원 (pdf.js가 부분 다운로드를 사용함)
+        # IMPORTANT: only support Range when object size is known.
+        supports_range = isinstance(total_size, int) and total_size > 0
         start = 0
-        end = total_size - 1 if total_size > 0 else 0
+        end = (total_size - 1) if supports_range else 0
         is_partial = False
 
-        if range_header:
-          # Example: "bytes=0-1023"
-          try:
-              unit, value = range_header.split("=", 1)
-              unit = unit.strip().lower()
-              if unit != "bytes":
-                  raise ValueError("Unsupported range unit")
-              value = value.strip()
-              if "," in value:
-                  # multi-range는 지원하지 않음
-                  raise ValueError("Multiple ranges not supported")
-              start_s, end_s = value.split("-", 1)
-              if start_s:
-                  start = int(start_s)
-              if end_s:
-                  end = int(end_s)
-              else:
-                  end = total_size - 1
-              if start < 0 or end < start or end >= total_size:
-                  raise ValueError("Invalid range")
-              is_partial = True
-          except Exception:
-              raise HTTPException(status_code=416, detail="Invalid Range")
+        if range_header and supports_range:
+            # Example: "bytes=0-1023"
+            try:
+                unit, value = range_header.split("=", 1)
+                unit = unit.strip().lower()
+                if unit != "bytes":
+                    raise ValueError("Unsupported range unit")
+                value = value.strip()
+                if "," in value:
+                    # multi-range는 지원하지 않음
+                    raise ValueError("Multiple ranges not supported")
+                start_s, end_s = value.split("-", 1)
+                if start_s:
+                    start = int(start_s)
+                if end_s:
+                    end = int(end_s)
+                else:
+                    end = total_size - 1
+                if start < 0 or end < start or end >= total_size:
+                    raise ValueError("Invalid range")
+                is_partial = True
+            except Exception:
+                raise HTTPException(status_code=416, detail="Invalid Range")
 
-        length = (end - start) + 1 if total_size > 0 else -1
+        length = (end - start) + 1 if is_partial else None
         response = minio_client.get_object(
             bucket_name=DEFAULT_BUCKET,
-            object_name=file_asset.file_key,
+            object_name=preferred_key,
             offset=start if is_partial else 0,
-            length=length if is_partial else None,
+            length=length,
         )
         
         # 파일 스트림을 반환
@@ -142,7 +640,6 @@ def proxy_file_for_viewer(
         headers = {
             "Content-Type": file_asset.mime_type or "application/pdf",
             "Content-Disposition": f"inline; filename*=UTF-8''{quoted_filename}",
-            "Accept-Ranges": "bytes",
             # Encourage browser/proxy caching for a short period to speed up re-opens.
             # This is a permissioned endpoint; keep it private and short-lived.
             "Cache-Control": "private, max-age=300",
@@ -151,10 +648,13 @@ def proxy_file_for_viewer(
             "Access-Control-Allow-Headers": "*",
         }
 
-        if is_partial and total_size > 0:
+        if supports_range:
+            headers["Accept-Ranges"] = "bytes"
+
+        if is_partial and supports_range:
             headers["Content-Range"] = f"bytes {start}-{end}/{total_size}"
-            headers["Content-Length"] = str(length)
-        elif total_size > 0:
+            headers["Content-Length"] = str((end - start) + 1)
+        elif supports_range:
             # Provide Content-Length for full responses as well. It helps pdf.js progress reporting
             # and can reduce buffering/guesswork in some environments.
             headers["Content-Length"] = str(total_size)
@@ -559,6 +1059,105 @@ async def upload_handwriting_image(
     }
 
 
+@router.post("/files/{file_id}/annotated-pdf", response_model=ReviewCommentOut)
+async def upload_annotated_pdf(
+    file_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """
+    Upload a baked/annotated PDF (e.g. saved from Acrobat/Preview).
+
+    Storage:
+    - Writes the baked PDF next to the original PDF object key using postfix: `__baked.pdf`
+      (does NOT replace the original `file_asset.file_key`)
+
+    UI:
+    - Creates a review comment of type "attachment" so the frontend can show the uploaded PDF.
+    """
+    user = get_current_user(db, x_user_id)
+
+    file_asset = db.query(FileAsset).filter(FileAsset.id == file_id).first()
+    if not file_asset:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    project = file_asset.project
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    ensure_can_manage_project(user, project)
+
+    # Ensure review exists
+    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
+    if not review:
+        review = Review(file_asset_id=file_id, status="pending")
+        db.add(review)
+        db.commit()
+        db.refresh(review)
+
+    # PDF only
+    if not file.content_type or "pdf" not in file.content_type.lower():
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
+    original_name = file.filename or f"annotated-{file_id}.pdf"
+    object_key = derive_baked_key(file_asset.file_key)
+
+    try:
+        ensure_bucket(DEFAULT_BUCKET)
+        up = upload_stream(
+            project_id=file_asset.project_id,
+            fileobj=file.file,
+            original_filename=original_name,
+            content_type="application/pdf",
+            object_key=object_key,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            await file.close()
+        except Exception:
+            pass
+
+    # Presigned URL (7 days) for quick access from UI
+    try:
+        baked_url = presign_download_url(
+            object_key=up.object_key,
+            expires_minutes=60 * 24 * 7,
+            download_filename=original_name,
+            content_type="application/pdf",
+            inline=True,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    comment = ReviewComment(
+        review_id=review.id,
+        author_id=user.id,
+        comment_type="attachment",
+        text_content=original_name,
+        handwriting_image_url=baked_url,
+    )
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+
+    return ReviewCommentOut(
+        id=comment.id,
+        review_id=comment.review_id,
+        author_id=comment.author_id,
+        author_name=user.name,
+        comment_type=comment.comment_type,
+        text_content=comment.text_content,
+        handwriting_image_url=comment.handwriting_image_url,
+        page_number=comment.page_number,
+        x_position=comment.x_position,
+        y_position=comment.y_position,
+        created_at=comment.created_at,
+    )
+
+
 @router.post("/files/{file_id}/stop", response_model=ReviewOut)
 def stop_review(
     file_id: int,
@@ -626,14 +1225,16 @@ def get_pdf_annotations(
 
     ensure_can_manage_project(user, project)
 
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    if not review:
-        return PDFAnnotationsData(annotations=[])
-
-    # MinIO에서 주석 데이터 로드
-    object_key = f"reviews/{review.id}/annotations.json"
+    # MinIO에서 주석 데이터 로드 (원본 파일 옆 postfix JSON)
+    object_key = derive_annotations_key(file_asset.file_key)
     try:
         data = get_json(object_key=object_key)
+        # Backward-compat: older builds stored annotations under review namespace.
+        if not data:
+            review = db.query(Review).filter(Review.file_asset_id == file_id).first()
+            if review:
+                legacy_key = f"reviews/{review.id}/annotations.json"
+                data = get_json(object_key=legacy_key)
         if not data:
             return PDFAnnotationsData(annotations=[])
         
@@ -686,19 +1287,16 @@ def save_pdf_annotations(
 
     ensure_can_manage_project(user, project)
 
+    # Ensure review exists (workflow), but store JSON next to original key.
     review = db.query(Review).filter(Review.file_asset_id == file_id).first()
     if not review:
-        # 검토가 없으면 생성
-        review = Review(
-            file_asset_id=file_id,
-            status="pending",
-        )
+        review = Review(file_asset_id=file_id, status="pending")
         db.add(review)
         db.commit()
         db.refresh(review)
 
-    # MinIO에 주석 데이터 저장
-    object_key = f"reviews/{review.id}/annotations.json"
+    # MinIO에 주석 데이터 저장 (원본 파일 옆 postfix JSON)
+    object_key = derive_annotations_key(file_asset.file_key)
     try:
         # 현재 시간
         now = datetime.utcnow().isoformat()
@@ -727,6 +1325,71 @@ def save_pdf_annotations(
         raise HTTPException(status_code=500, detail=f"Failed to save annotations: {str(e)}")
 
 
+@router.post("/files/{file_id}/bake", response_model=dict)
+def bake_review_pdf(
+    file_id: int,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """
+    Bake the current annotations JSON into a PDF and store it next to the original PDF.
+
+    Storage (MinIO):
+    - original: `file_asset.file_key` (unchanged)
+    - baked:    `derive_baked_key(file_asset.file_key)` (overwrite; no history)
+    - json:     `derive_annotations_key(file_asset.file_key)` (must already exist; overwrite via /annotations)
+    """
+    user = get_current_user(db, x_user_id)
+
+    file_asset = db.query(FileAsset).filter(FileAsset.id == file_id).first()
+    if not file_asset:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    project = file_asset.project
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    ensure_can_manage_project(user, project)
+
+    # Load annotations JSON (sidecar next to original)
+    ann_key = derive_annotations_key(file_asset.file_key)
+    data = get_json(object_key=ann_key) or {}
+    anns = data.get("annotations", [])
+    if not isinstance(anns, list):
+        anns = []
+
+    # Load original PDF bytes
+    try:
+        original_pdf_bytes = _read_object_bytes(file_asset.file_key)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load original PDF: {str(e)}")
+
+    # Bake
+    try:
+        baked_bytes = _build_baked_pdf_bytes(original_pdf_bytes=original_pdf_bytes, annotations=anns)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to bake PDF: {str(e)}")
+
+    # Upload baked next to original (postfix)
+    baked_key = derive_baked_key(file_asset.file_key)
+    try:
+        up = upload_stream(
+            project_id=file_asset.project_id,
+            fileobj=io.BytesIO(baked_bytes),
+            original_filename=file_asset.original_name or f"baked-{file_id}.pdf",
+            content_type="application/pdf",
+            object_key=baked_key,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Cache the size to make subsequent Range proxy requests fast.
+    _OBJECT_SIZE_CACHE[up.object_key] = (len(baked_bytes), time.time() + _OBJECT_SIZE_CACHE_TTL_SECONDS)
+
+    return {"file_id": file_id, "object_key": up.object_key}
+
 @router.post("/files/{file_id}/annotations/add", response_model=PDFAnnotation)
 def add_pdf_annotation(
     file_id: int,
@@ -747,20 +1410,17 @@ def add_pdf_annotation(
 
     ensure_can_manage_project(user, project)
 
+    # Ensure review exists (workflow), but store JSON next to original key.
     review = db.query(Review).filter(Review.file_asset_id == file_id).first()
     if not review:
-        # 검토가 없으면 생성
-        review = Review(
-            file_asset_id=file_id,
-            status="pending",
-        )
+        review = Review(file_asset_id=file_id, status="pending")
         db.add(review)
         db.commit()
         db.refresh(review)
 
     # 기존 주석 로드
-    object_key = f"reviews/{review.id}/annotations.json"
-    data = get_json(object_key=object_key)
+    object_key = derive_annotations_key(file_asset.file_key)
+    data = get_json(object_key=object_key) or {}
     annotations_list = data.get("annotations", [])
 
     # 새 주석 추가

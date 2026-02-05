@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 
 from ..authz import ensure_can_manage_project
 from ..mariadb.database import SessionLocal
-from ..mariadb.models import Project, FileAsset, Activity
-from ..minio.service import upload_stream, presign_download_url, delete_object
+from ..mariadb.models import Project, FileAsset, Activity, Review
+from ..minio.service import upload_stream, presign_download_url, delete_objects
+from ..utils.storage_derivation import derive_annotations_key, derive_baked_key
 from ..utils.storage_naming import build_project_slug, build_file_key
 from .auth import get_current_user
 
@@ -319,6 +320,9 @@ def delete_project_file(
     if not asset:
         raise HTTPException(status_code=404, detail="File not found")
 
+    # Look up review for legacy annotation cleanup (best-effort).
+    review = db.query(Review).filter(Review.file_asset_id == asset.id).first()
+
     # Activity 레코드 생성 (삭제 전에 기록)
     file_type_label = asset.file_type or "파일"
     description = f"{asset.original_name} ({file_type_label})"
@@ -334,7 +338,28 @@ def delete_project_file(
     db.add(activity)
 
     try:
-        delete_object(object_key=asset.file_key)
+        # Delete original + derived sidecars (baked PDF + annotations JSON).
+        # Best-effort: ignore missing objects (e.g. never baked / never annotated).
+        keys = [
+            asset.file_key,
+            derive_baked_key(asset.file_key),
+            derive_annotations_key(asset.file_key),
+        ]
+        # Backward-compat: older builds stored annotations under review namespace.
+        if review:
+            keys.append(f"reviews/{review.id}/annotations.json")
+
+        # Dedup while preserving order
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for k in keys:
+            k = (k or "").strip()
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            deduped.append(k)
+
+        delete_objects(object_keys=deduped, ignore_missing=True)
     except RuntimeError as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

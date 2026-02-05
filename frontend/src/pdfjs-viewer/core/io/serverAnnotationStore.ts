@@ -69,8 +69,16 @@ export class ServerAnnotationStore implements AnnotationStore {
           id: ann.id,
           page: ann.page,
           // x,y are backend schema helper fields.
-          x: d.x || d.rect?.x || (d.points?.[0] || (Array.isArray(d.pointsNorm) ? d.pointsNorm[0] : 0) || 0),
-          y: d.y || d.rect?.y || (d.points?.[1] || (Array.isArray(d.pointsNorm) ? d.pointsNorm[1] : 0) || 0),
+          x:
+            d.x ||
+            d.rect?.x ||
+            d.rectNorm?.x ||
+            (d.points?.[0] || (Array.isArray(d.pointsNorm) ? d.pointsNorm[0] : 0) || 0),
+          y:
+            d.y ||
+            d.rect?.y ||
+            d.rectNorm?.y ||
+            (d.points?.[1] || (Array.isArray(d.pointsNorm) ? d.pointsNorm[1] : 0) || 0),
           text: JSON.stringify({ type: ann.type, data: ann.data }),
           created_at: ann.created_at || new Date().toISOString(),
           updated_at: new Date().toISOString(),

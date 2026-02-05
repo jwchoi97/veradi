@@ -29,6 +29,15 @@ const PDF_JS_KONVA_VIEWER_CSS = `
 .pdf-viewer-toolbar .inp{width:70px;height:32px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.25);color:#f9fafb}
 .pdf-viewer-toolbar .hint{font-size:12px;opacity:.85;padding:0 4px}
 .pdf-viewer-toolbar .sep{display:inline-block;width:1px;height:22px;margin:0 4px;background:rgba(255,255,255,.16)}
+.pdf-viewer-toolbar .btnbox{display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);border-radius:8px;overflow:hidden}
+.pdf-viewer-toolbar .btnbox .segbtn{appearance:none;border:0;background:transparent;color:inherit;height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;font-size:13px;line-height:1}
+.pdf-viewer-toolbar .btnbox .segbtn:hover{background:rgba(255,255,255,.12)}
+.pdf-viewer-toolbar .btnbox .segbtn.active{background:rgba(99,102,241,.18)}
+.pdf-viewer-toolbar .btnbox .segdiv{width:1px;height:22px;background:rgba(255,255,255,.14)}
+.pdf-viewer-toolbar .spinbox{display:inline-flex;flex-direction:column;border:1px solid rgba(148,163,184,.35);background:rgba(107,114,128,.18);border-radius:10px;overflow:hidden}
+.pdf-viewer-toolbar .spinbtn{appearance:none;border:0;background:rgba(107,114,128,.22);color:rgba(243,244,246,.92);height:15px;min-width:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;line-height:1;font-size:10px}
+.pdf-viewer-toolbar .spinbtn:hover{background:rgba(107,114,128,.32)}
+.pdf-viewer-toolbar .spinsep{width:100%;height:1px;background:rgba(148,163,184,.28)}
 .pdf-viewer-main{position:relative;flex:1 1 auto;min-height:0}
 .pdf-viewer-xscroll{width:100%;height:100%;overflow-x:auto;overflow-y:visible;overscroll-behavior:contain}
 .pdf-viewer-container{width:100%}
@@ -43,13 +52,6 @@ const PDF_JS_KONVA_VIEWER_CSS = `
 .pdf-viewer-tool-settings .range{flex:1 1 auto}
 .pdf-viewer-tool-settings .num{width:64px;height:30px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#f9fafb;padding:0 8px}
 .pdf-viewer-tool-settings .pct{width:56px;text-align:right;font-variant-numeric:tabular-nums;opacity:.9}
-.pdf-viewer-toc-panel{position:absolute;top:44px;left:10px;width:280px;max-height:calc(100% - 54px);background:#0b1220;color:#f9fafb;border:1px solid rgba(255,255,255,.14);border-radius:12px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.35);transform:translateX(-8px);opacity:0;pointer-events:none;transition:opacity 120ms ease,transform 120ms ease;z-index:70}
-.pdf-viewer-toc-panel.open{transform:translateX(0);opacity:1;pointer-events:auto}
-.pdf-viewer-toc-header{display:flex;align-items:center;justify-content:space-between;padding:10px 10px;border-bottom:1px solid rgba(255,255,255,.12)}
-.pdf-viewer-toc-list{overflow:auto;max-height:calc(100% - 44px);padding:8px}
-.pdf-viewer-toc-item{width:100%;text-align:left;padding:8px 10px;border-radius:10px;border:1px solid transparent;background:transparent;color:inherit;cursor:pointer;font-size:13px}
-.pdf-viewer-toc-item:hover{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.12)}
-.pdf-viewer-toc-empty{padding:10px 10px;opacity:.85;font-size:12px}
 `;
 
 // KonvaAnnotationManager와 관련 타입들을 main.ts에서 가져와야 하지만,
@@ -86,9 +88,15 @@ export default function PdfJsKonvaViewer({
   const [totalPages, setTotalPages] = useState(0);
   const [zoomPct, setZoomPct] = useState(100);
   const [currentMode, setCurrentMode] = useState<"none" | "ink" | "highlight" | "freetext" | "eraser">("none");
-  const [tocOpen, setTocOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [docReady, setDocReady] = useState(false);
+
+  // Page input: keep a local draft so typing/spinner changes can be applied reliably.
+  const [pageInput, setPageInput] = useState<string>("1");
+  const pageInputFocusedRef = useRef(false);
+  const pendingApplyPageTimerRef = useRef<number | null>(null);
+  const pendingScrollSyncRafRef = useRef<number | null>(null);
+  const currentPageRef = useRef<number>(1);
 
   // tool settings (match previous viewer behavior)
   const [openSettings, setOpenSettings] = useState<null | "ink" | "highlight">(null);
@@ -103,8 +111,7 @@ export default function PdfJsKonvaViewer({
 
   const [highlightPalette, setHighlightPalette] = useState<string[]>(["#FFF066", "#A7F3D0", "#BFDBFE", "#FBCFE8", "#FDE68A"]);
   const [highlightPaletteIdx, setHighlightPaletteIdx] = useState(0);
-  const [highlightWidth, setHighlightWidth] = useState(12);
-  const [highlightOpacity, setHighlightOpacity] = useState(0.75);
+  const [highlightOpacity, setHighlightOpacity] = useState(0.45);
 
   const inkColor = inkPalette[inkPaletteIdx] || "#111827";
   const highlightColor = highlightPalette[highlightPaletteIdx] || "#FFF066";
@@ -139,6 +146,23 @@ export default function PdfJsKonvaViewer({
   const ignoreNextScrollRef = useRef(false);
   const userScrolledHorizRef = useRef(false);
 
+  const isScrollableY = useCallback((el: HTMLElement | null): boolean => {
+    if (!el) return false;
+    try {
+      const style = window.getComputedStyle(el);
+      const ov = style.overflowY;
+      const isScrollableStyle =
+        ov === "auto" ||
+        ov === "scroll" ||
+        el.classList.toString().includes("overflow-y-auto") ||
+        el.classList.toString().includes("overflow-y-scroll");
+      if (!isScrollableStyle) return false;
+      return el.scrollHeight > el.clientHeight + 2;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const getScrollParentX = useCallback((): HTMLElement | null => {
     if (scrollParentRef.current) return scrollParentRef.current;
     const start = containerRef.current;
@@ -162,26 +186,22 @@ export default function PdfJsKonvaViewer({
   }, []);
 
   const getScrollParentY = useCallback((): HTMLElement | null => {
-    if (scrollParentYRef.current) return scrollParentYRef.current;
+    // Validate cached scroll parent; if it is no longer scrollable, re-detect.
+    if (scrollParentYRef.current && isScrollableY(scrollParentYRef.current)) return scrollParentYRef.current;
+    scrollParentYRef.current = null;
     const start = containerRef.current;
     if (!start) return document.scrollingElement as HTMLElement | null;
     let el: HTMLElement | null = start.parentElement as HTMLElement | null;
     while (el) {
-      const style = window.getComputedStyle(el);
-      const ov = style.overflowY;
-      const isScrollableStyle =
-        ov === "auto" ||
-        ov === "scroll" ||
-        el.classList.toString().includes("overflow-y-auto") ||
-        el.classList.toString().includes("overflow-y-scroll");
-      if (isScrollableStyle && el.scrollHeight > el.clientHeight + 2) {
+      if (isScrollableY(el)) {
         scrollParentYRef.current = el;
         return el;
       }
       el = el.parentElement as HTMLElement | null;
     }
+    // Do not cache scrollingElement (SPA layouts often scroll inside a div).
     return document.scrollingElement as HTMLElement | null;
-  }, []);
+  }, [isScrollableY]);
 
   const centerCanvasInWrapper = useCallback(
     (opts?: { force?: boolean }) => {
@@ -391,7 +411,16 @@ export default function PdfJsKonvaViewer({
     };
     
     const onPageChange = (e: any) => {
-      setCurrentPage(e.page || 1);
+      // pdf.js emits `pageNumber` (not `page`) for "pagechanging"
+      const raw = e?.pageNumber ?? e?.page ?? e?.pageNum;
+      const next = Number(raw);
+      if (Number.isFinite(next) && next > 0) {
+        currentPageRef.current = next;
+        setCurrentPage(next);
+        if (!pageInputFocusedRef.current) setPageInput(String(next));
+        return;
+      }
+      // Fallback: keep existing state (avoid flashing to 1)
     };
     
     const onScaleChange = (e: any) => {
@@ -537,6 +566,180 @@ export default function PdfJsKonvaViewer({
     };
   }, [fileUrl, viewerReady, linkService]);
 
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (pendingApplyPageTimerRef.current !== null) {
+        window.clearTimeout(pendingApplyPageTimerRef.current);
+        pendingApplyPageTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // Keep page input in sync with the actual current page (unless user is actively typing).
+  useEffect(() => {
+    currentPageRef.current = currentPage;
+    if (pageInputFocusedRef.current) return;
+    setPageInput(String(currentPage || 1));
+  }, [currentPage]);
+
+  // When vertical scrolling is handled by the OUTER container, pdf.js won't automatically
+  // update the current page. So we compute the page in view based on DOM geometry and
+  // sync state/input (and pdfViewer.currentPageNumber for internal consistency).
+  useEffect(() => {
+    if (!viewerReady) return;
+    const computeVisiblePage = () => {
+      const pv = pdfViewerRef.current;
+      const root = viewerRef.current;
+      if (!pv || !root) return;
+
+      const sp = getScrollParentY();
+      if (!sp) return;
+
+      const toolbarEl = rootRef.current?.querySelector?.(".pdf-viewer-toolbar") as HTMLElement | null;
+      const toolbarH = toolbarEl?.getBoundingClientRect?.().height || 0;
+      const margin = 6;
+      const spBox = sp.getBoundingClientRect();
+      const topLine = spBox.top + toolbarH + margin;
+
+      const pages = Array.from(root.querySelectorAll(".page")) as HTMLElement[];
+      if (pages.length === 0) return;
+
+      let chosen: number | null = null;
+      let bestTop: number | null = null;
+
+      for (const el of pages) {
+        const rect = el.getBoundingClientRect();
+        // Page that intersects the "top line" wins.
+        if (rect.top <= topLine && rect.bottom > topLine) {
+          const n = Number(el.getAttribute("data-page-number") || "");
+          if (Number.isFinite(n) && n > 0) {
+            chosen = n;
+            break;
+          }
+        }
+        // Otherwise, choose the first page below the top offset.
+        if (rect.top > topLine) {
+          if (bestTop === null || rect.top < bestTop) {
+            bestTop = rect.top;
+            const n = Number(el.getAttribute("data-page-number") || "");
+            if (Number.isFinite(n) && n > 0) chosen = n;
+          }
+        }
+      }
+
+      if (chosen === null) {
+        // Fallback: last page (e.g. scrolled past everything due to layout edge cases)
+        const last = pages[pages.length - 1];
+        const n = Number(last?.getAttribute("data-page-number") || "");
+        if (Number.isFinite(n) && n > 0) chosen = n;
+      }
+      if (chosen === null) return;
+
+      // Update state/UI only when it actually changes.
+      if (chosen !== currentPageRef.current) {
+        setCurrentPage(chosen);
+      }
+      if (!pageInputFocusedRef.current) setPageInput(String(chosen));
+
+      // Keep pdf.js internal state consistent (doesn't scroll here, just updates selection/events).
+      try {
+        if (pv.currentPageNumber !== chosen) pv.currentPageNumber = chosen;
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const onScroll = () => {
+      if (pendingScrollSyncRafRef.current !== null) return;
+      pendingScrollSyncRafRef.current = window.requestAnimationFrame(() => {
+        pendingScrollSyncRafRef.current = null;
+        computeVisiblePage();
+      });
+    };
+
+    // Capture scroll events from ANY scroll container (scroll doesn't bubble).
+    window.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    // Initial sync
+    onScroll();
+    return () => {
+      window.removeEventListener("scroll", onScroll as any, true as any);
+      if (pendingScrollSyncRafRef.current !== null) {
+        window.cancelAnimationFrame(pendingScrollSyncRafRef.current);
+        pendingScrollSyncRafRef.current = null;
+      }
+    };
+  }, [viewerReady, getScrollParentY]);
+
+  const scrollOuterToPageTop = useCallback(
+    (pageNum: number) => {
+      const pv = pdfViewerRef.current;
+      if (!pv) return;
+
+      const sp = getScrollParentY();
+      if (!sp) return;
+
+      const pageView = pv.getPageView?.(pageNum - 1) as any;
+      const pageEl =
+        ((pageView?.div || pageView?.container) as HTMLElement | undefined) ||
+        (viewerRef.current?.querySelector?.(`.page[data-page-number="${pageNum}"]`) as HTMLElement | null) ||
+        undefined;
+      if (!pageEl) return;
+
+      const spBox = sp.getBoundingClientRect();
+      const pBox = pageEl.getBoundingClientRect();
+
+      // Sticky toolbar can cover the top of the page; offset by its height.
+      const toolbarEl = rootRef.current?.querySelector?.(".pdf-viewer-toolbar") as HTMLElement | null;
+      const toolbarH = toolbarEl?.getBoundingClientRect?.().height || 0;
+      const margin = 6;
+
+      const delta = pBox.top - spBox.top;
+      const next = Math.max(0, Math.round(sp.scrollTop + delta - toolbarH - margin));
+      sp.scrollTop = next;
+    },
+    [getScrollParentY]
+  );
+
+  const applyPageNumber = useCallback(
+    (raw: string) => {
+      if (!pdfViewerRef.current || !pdfDocRef.current) return;
+      if (raw.trim() === "") return;
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return;
+      const pageNum = Math.max(1, Math.min(pdfDocRef.current.numPages, Math.trunc(n) || 1));
+      pdfViewerRef.current.currentPageNumber = pageNum;
+      setCurrentPage(pageNum);
+      // In this viewer, vertical scrolling is delegated to the OUTER scroll container.
+      // So, manually align the selected page's top to the visible top.
+      try {
+        // Allow pdf.js to update layout before measuring.
+        requestAnimationFrame(() => {
+          scrollOuterToPageTop(pageNum);
+          // Retry shortly in case the page wasn't laid out yet.
+          window.setTimeout(() => scrollOuterToPageTop(pageNum), 50);
+        });
+      } catch {
+        /* ignore */
+      }
+    },
+    [scrollOuterToPageTop]
+  );
+
+  const scheduleApplyPageNumber = useCallback(
+    (raw: string, delayMs = 200) => {
+      if (pendingApplyPageTimerRef.current !== null) {
+        window.clearTimeout(pendingApplyPageTimerRef.current);
+        pendingApplyPageTimerRef.current = null;
+      }
+      pendingApplyPageTimerRef.current = window.setTimeout(() => {
+        pendingApplyPageTimerRef.current = null;
+        applyPageNumber(raw);
+      }, delayMs);
+    },
+    [applyPageNumber]
+  );
+
   // KonvaAnnotationManager 초기화/연동
   useEffect(() => {
     if (!viewerReady || !docReady) return;
@@ -613,8 +816,8 @@ export default function PdfJsKonvaViewer({
   }, [inkColor, inkWidth]);
 
   useEffect(() => {
-    try { annotationManagerRef.current?.setHighlightSettings?.({ color: highlightColor, width: highlightWidth, opacity: 0.75 }); } catch { /* ignore */ }
-  }, [highlightColor, highlightWidth]);
+    try { annotationManagerRef.current?.setHighlightSettings?.({ color: highlightColor }); } catch { /* ignore */ }
+  }, [highlightColor]);
 
   useEffect(() => {
     try { annotationManagerRef.current?.setHighlightSettings?.({ opacity: highlightOpacity }); } catch { /* ignore */ }
@@ -683,26 +886,46 @@ export default function PdfJsKonvaViewer({
     try { requestAnimationFrame(() => centerCanvasInWrapper({ force: true })); } catch { /* ignore */ }
   }, [clampScale, centerCanvasInWrapper]);
 
-  const handlePrevPage = useCallback(() => {
-    if (!pdfViewerRef.current) return;
-    pdfViewerRef.current.currentPageNumber--;
-  }, []);
-
-  const handleNextPage = useCallback(() => {
-    if (!pdfViewerRef.current) return;
-    pdfViewerRef.current.currentPageNumber++;
-  }, []);
-
-  const handlePageNumberChange = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key !== "Enter" || !pdfViewerRef.current || !pdfDocRef.current) return;
-    const pageNum = Math.max(1, Math.min(pdfDocRef.current.numPages, Number(e.currentTarget.value) || 1));
-    pdfViewerRef.current.currentPageNumber = pageNum;
-  }, []);
+  const handlePageNumberKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      if (pendingApplyPageTimerRef.current !== null) {
+        window.clearTimeout(pendingApplyPageTimerRef.current);
+        pendingApplyPageTimerRef.current = null;
+      }
+      applyPageNumber((e.currentTarget as HTMLInputElement).value);
+      // After applying, reflect the actual current page (clamped) in the input.
+      try {
+        const cur = pdfViewerRef.current?.currentPageNumber;
+        if (typeof cur === "number" && Number.isFinite(cur)) setPageInput(String(cur));
+      } catch {
+        /* ignore */
+      }
+    },
+    [applyPageNumber]
+  );
 
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
+      // 1) Save annotations JSON (sidecar next to original PDF)
       await annotationManagerRef.current?.save?.();
+
+      // 2) Bake JSON into a PDF and overwrite baked sidecar next to original.
+      // This baked PDF is what the upload-page "검토상태" click opens (read-only).
+      const me = getAuthedUser();
+      const headers: Record<string, string> = {};
+      if (typeof me?.id === "number") headers["X-User-Id"] = String(me.id);
+      const res = await fetch(`/api/reviews/files/${fileId}/bake`, {
+        method: "POST",
+        headers,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Bake failed (${res.status})`);
+      }
     } catch (err: any) {
       alert(err?.message || "저장 실패");
     } finally {
@@ -834,73 +1057,6 @@ export default function PdfJsKonvaViewer({
     try { annotationManagerRef.current?.setMode?.("freetext" as any); } catch { /* ignore */ }
   }, []);
 
-  // 목차 로드
-  useEffect(() => {
-    if (!pdfDocRef.current || !tocOpen) return;
-    
-    const loadTOC = async () => {
-      try {
-        const outline = await pdfDocRef.current?.getOutline();
-        const tocList = document.querySelector(".pdf-viewer-toc-list");
-        if (!tocList) return;
-
-        if (!outline || outline.length === 0) {
-          // 페이지 목록 fallback
-          const total = pdfDocRef.current?.numPages || 0;
-          tocList.innerHTML = "";
-          const title = document.createElement("div");
-          title.className = "pdf-viewer-toc-empty";
-          title.textContent = "이 PDF에는 목차(북마크)가 없습니다. 페이지 목록을 표시합니다.";
-          tocList.appendChild(title);
-
-          for (let p = 1; p <= total; p++) {
-            const btn = document.createElement("button");
-            btn.className = "pdf-viewer-toc-item";
-            btn.textContent = `페이지 ${p}`;
-            btn.onclick = () => {
-              if (pdfViewerRef.current) {
-                pdfViewerRef.current.currentPageNumber = p;
-                setTocOpen(false);
-              }
-            };
-            tocList.appendChild(btn);
-          }
-          return;
-        }
-
-        // 목차 렌더링
-        tocList.innerHTML = "";
-        const addItems = (items: any[], depth: number) => {
-          items.forEach((it) => {
-            const btn = document.createElement("button");
-            btn.className = "pdf-viewer-toc-item";
-            btn.style.paddingLeft = `${10 + depth * 14}px`;
-            btn.textContent = String(it?.title || "").trim() || "(제목 없음)";
-            btn.onclick = () => {
-              if (it?.dest && pdfViewerRef.current) {
-                try {
-                  (linkService as any).navigateTo(it.dest);
-                  setTocOpen(false);
-                } catch (e) {
-                  console.warn("Failed to navigate outline item", e);
-                }
-              }
-            };
-            tocList.appendChild(btn);
-            if (Array.isArray(it?.items) && it.items.length > 0) {
-              addItems(it.items, depth + 1);
-            }
-          });
-        };
-        addItems(outline, 0);
-      } catch (e) {
-        console.error("Failed to load TOC", e);
-      }
-    };
-
-    void loadTOC();
-  }, [pdfDocRef.current, tocOpen, linkService, setTocOpen]);
-
   // 조건부 렌더링은 모든 hooks 호출 후에만 수행
   if (loadError) {
     return (
@@ -923,13 +1079,6 @@ export default function PdfJsKonvaViewer({
       {/* 툴바 */}
       <div className="pdf-viewer-toolbar">
         <div className="group">
-          <button
-            className={`btn ${tocOpen ? "active" : ""}`}
-            onClick={() => setTocOpen(!tocOpen)}
-            title="목차(Outline)"
-          >
-            ☰
-          </button>
           <button
             className={`btn ${currentMode === "none" ? "active" : ""}`}
             onClick={() => setCurrentMode("none")}
@@ -982,43 +1131,69 @@ export default function PdfJsKonvaViewer({
             ↷
           </button>
           <span className="sep"></span>
-          <button className="btn" onClick={handlePrevPage} disabled={currentPage <= 1} title="이전 페이지">
-            ◀
-          </button>
           <input
             ref={pageNumberInputRef}
             className="inp"
             type="number"
-            value={currentPage}
-            onChange={(e) => setCurrentPage(Number(e.target.value) || 1)}
-            onKeyDown={handlePageNumberChange}
+            min={1}
+            max={Math.max(1, totalPages || 1)}
+            value={pageInput}
+            onFocus={() => {
+              pageInputFocusedRef.current = true;
+            }}
+            onBlur={(e) => {
+              pageInputFocusedRef.current = false;
+              // Apply on blur so typed values also navigate even without Enter.
+              if (pendingApplyPageTimerRef.current !== null) {
+                window.clearTimeout(pendingApplyPageTimerRef.current);
+                pendingApplyPageTimerRef.current = null;
+              }
+              applyPageNumber(e.currentTarget.value);
+              // Sync input to the clamped/current page.
+              setPageInput(String(pdfViewerRef.current?.currentPageNumber || currentPage || 1));
+            }}
+            onChange={(e) => {
+              const raw = e.target.value;
+              setPageInput(raw);
+              // Apply after a short debounce so both typing and spinner controls work.
+              scheduleApplyPageNumber(raw, 200);
+            }}
+            onKeyDown={handlePageNumberKeyDown}
             inputMode="numeric"
           />
           <span className="hint">/ {totalPages || "?"}</span>
-          <button
-            className="btn"
-            onClick={handleNextPage}
-            disabled={currentPage >= totalPages}
-            title="다음 페이지"
-          >
-            ▶
-          </button>
           <span className="sep"></span>
-          <button className="btn" onClick={handleZoomOut} title="축소">
-            −
-          </button>
-          <button className="btn" onClick={handleZoomIn} title="확대">
-            ＋
-          </button>
           <button className="btn" title="확대율" style={{ minWidth: "64px", justifyContent: "center" }}>
             {zoomPct}%
           </button>
-          <button className="btn" onClick={handleFitWidth} title="너비 맞춤">
-            너비
-          </button>
-          <button className="btn" onClick={handleFitHeight} title="높이 맞춤">
-            높이
-          </button>
+          <div className="spinbox" role="group" aria-label="확대/축소">
+            <button type="button" className="spinbtn" onClick={handleZoomIn} title="확대" aria-label="확대">
+              ▲
+            </button>
+            <div className="spinsep" aria-hidden="true" />
+            <button type="button" className="spinbtn" onClick={handleZoomOut} title="축소" aria-label="축소">
+              ▼
+            </button>
+          </div>
+          <div className="btnbox" role="group" aria-label="맞춤">
+            <button
+              type="button"
+              className={`segbtn`}
+              onClick={handleFitWidth}
+              title="너비 맞춤"
+            >
+              너비
+            </button>
+            <span className="segdiv" aria-hidden="true" />
+            <button
+              type="button"
+              className={`segbtn`}
+              onClick={handleFitHeight}
+              title="높이 맞춤"
+            >
+              높이
+            </button>
+          </div>
         </div>
         <div className="group right">
           {fullscreen ? (
@@ -1167,25 +1342,6 @@ export default function PdfJsKonvaViewer({
                 />
               </div>
               <div className="row">
-                <div className="label">두께</div>
-                <input
-                  className="range"
-                  type="range"
-                  min={4}
-                  max={80}
-                  value={highlightWidth}
-                  onChange={(e) => setHighlightWidth(Math.max(4, Math.min(80, Number(e.target.value) || 12)))}
-                />
-                <input
-                  className="num"
-                  type="number"
-                  min={4}
-                  max={80}
-                  value={highlightWidth}
-                  onChange={(e) => setHighlightWidth(Math.max(4, Math.min(80, Number(e.target.value) || 12)))}
-                />
-              </div>
-              <div className="row">
                 <div className="label">투명도</div>
                 <input
                   className="range"
@@ -1202,19 +1358,6 @@ export default function PdfJsKonvaViewer({
           )}
         </div>
       )}
-
-      {/* 목차 패널 */}
-      <div className={`pdf-viewer-toc-panel ${tocOpen ? "open" : ""}`} aria-hidden={!tocOpen}>
-        <div className="pdf-viewer-toc-header">
-          <div style={{ fontWeight: 600 }}>목차</div>
-          <button className="btn" onClick={() => setTocOpen(false)} title="닫기">
-            닫기
-          </button>
-        </div>
-        <div className="pdf-viewer-toc-list">
-          <div className="pdf-viewer-toc-empty">목차를 불러오는 중...</div>
-        </div>
-      </div>
 
       {/* PDF 뷰어 영역 */}
       <div className="pdf-viewer-main">

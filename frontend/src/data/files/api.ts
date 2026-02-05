@@ -333,6 +333,11 @@ export async function stopReview(fileId: number): Promise<Review> {
   return res.data;
 }
 
+export async function getFileInlineUrl(fileId: number): Promise<{ url: string; expires_minutes: number }> {
+  const res = await api.get<{ url: string; expires_minutes: number }>(`/reviews/files/${fileId}/inline-url`);
+  return res.data;
+}
+
 export async function getFileViewUrl(fileId: number): Promise<{ url: string; expires_minutes: number }> {
   const res = await api.get<{ url: string; expires_minutes: number }>(`/reviews/files/${fileId}/view-url`);
   // baseURL과 결합하여 전체 URL 생성
@@ -342,7 +347,6 @@ export async function getFileViewUrl(fileId: number): Promise<{ url: string; exp
   const fullUrl = res.data.url.startsWith("http") 
     ? res.data.url 
     : `${baseURL}${res.data.url}`;
-  console.log("PDF View URL:", fullUrl); // 디버깅용
   return { url: fullUrl, expires_minutes: res.data.expires_minutes };
 }
 
@@ -380,7 +384,9 @@ function parseFilenameFromContentDisposition(cd: string | undefined | null): str
 export async function downloadReviewPdf(
   fileId: number
 ): Promise<{ blob: Blob; filename: string; contentType: string }> {
-  const res = await api.get(`/reviews/files/${fileId}/proxy`, { responseType: "blob" });
+  // Use view-url to ensure we download the same variant the viewer opens (baked if exists).
+  const viewInfo = await api.get<{ url: string; expires_minutes: number }>(`/reviews/files/${fileId}/view-url`);
+  const res = await api.get(viewInfo.data.url, { responseType: "blob" });
   const cd = (res.headers as any)?.["content-disposition"] as string | undefined;
   const ct = ((res.headers as any)?.["content-type"] as string | undefined) || "application/pdf";
   const filename = parseFilenameFromContentDisposition(cd) || `file_${fileId}.pdf`;
