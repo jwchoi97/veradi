@@ -2270,9 +2270,9 @@ export class KonvaAnnotationManager {
             this.uiLayer?.batchDraw();
             return;
           }
-          // start marquee selection for mouse/pen
+          // start marquee selection for mouse/pen (use document coords so it stays correct when scrolled)
           this.isMarqueeSelecting = true;
-          this.marqueeStart = { x: pos.x, y: pos.y };
+          this.marqueeStart = { x: docPos.x, y: docPos.y };
           this.marqueeAdditive = shift;
           try {
             this.marqueeRect?.destroy();
@@ -2280,8 +2280,8 @@ export class KonvaAnnotationManager {
             /* ignore */
           }
           this.marqueeRect = new Konva.Rect({
-            x: pos.x,
-            y: pos.y,
+            x: docPos.x,
+            y: docPos.y,
             width: 0,
             height: 0,
             stroke: "#6366f1",
@@ -2392,10 +2392,10 @@ export class KonvaAnnotationManager {
       if (this.currentMode === "none" && this.isMarqueeSelecting && this.marqueeStart && this.marqueeRect) {
         const x1 = this.marqueeStart.x;
         const y1 = this.marqueeStart.y;
-        const x = Math.min(x1, pos.x);
-        const y = Math.min(y1, pos.y);
-        const w = Math.abs(pos.x - x1);
-        const h = Math.abs(pos.y - y1);
+        const x = Math.min(x1, docPos.x);
+        const y = Math.min(y1, docPos.y);
+        const w = Math.abs(docPos.x - x1);
+        const h = Math.abs(docPos.y - y1);
         this.marqueeRect.position({ x, y });
         this.marqueeRect.size({ width: w, height: h });
         this.uiLayer?.batchDraw();
