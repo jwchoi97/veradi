@@ -168,7 +168,7 @@ export default function AppLayout() {
           </nav>
         </aside>
 
-        <main className="main">
+        <main className={`main ${location.pathname.startsWith("/reviews") ? "main-noscroll" : ""}`}>
           <Outlet />
         </main>
       </div>

@@ -86,7 +86,8 @@ export class ServerAnnotationStore implements AnnotationStore {
       });
     });
 
-    const res = await fetch(`/api/reviews/files/${fileId}/annotations`, {
+    // Backend defaults to a minimal response for performance.
+    const res = await fetch(`/api/reviews/files/${fileId}/annotations?return_full=0`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

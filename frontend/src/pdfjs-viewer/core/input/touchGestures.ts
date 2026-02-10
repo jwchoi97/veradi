@@ -9,6 +9,14 @@ export type TouchGestureOptions = {
   getScale: () => number;
   setScale: (next: number) => void;
   clampScale: (n: number) => number;
+  /**
+   * Optional pinch-zoom preview hook.
+   * When provided, pinch gestures will NOT call `setScale()` every frame.
+   * Instead, they will call this with a transient CSS-scale ratio for smooth UX,
+   * and commit `setScale()` once on pinch end.
+   */
+  setPinchPreviewScale?: (ratio: number, midClient: { x: number; y: number }) => void;
+  clearPinchPreviewScale?: () => void;
 };
 
 type Pt = { x: number; y: number };
@@ -48,6 +56,7 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
   let lastGesture: "none" | "pan" | "pinch" = "none";
   let lastPanVel: Vel = { vx: 0, vy: 0 };
   let lastPanAt = 0;
+  let lastPinch: null | { nextScale: number; midClient: Pt } = null;
 
   const stopInertia = () => {
     if (inertiaRaf != null) {
@@ -136,6 +145,12 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
     if (touches.size === 0) {
       pinchStart = null;
       lastGesture = "none";
+      lastPinch = null;
+      try {
+        opts.clearPinchPreviewScale?.();
+      } catch {
+        /* ignore */
+      }
       return;
     }
 
@@ -204,12 +219,23 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
 
     const ratio = d / Math.max(1, pinchStart.dist);
     const nextScale = opts.clampScale(pinchStart.scale * ratio);
-    opts.setScale(nextScale);
+    lastPinch = { nextScale, midClient: mid };
+    // Smooth preview (CSS scale) if enabled; otherwise fall back to immediate setScale.
+    const previewRatio = nextScale / Math.max(0.0001, pinchStart.scale);
+    if (opts.setPinchPreviewScale) {
+      try {
+        opts.setPinchPreviewScale(previewRatio, mid);
+      } catch {
+        /* ignore */
+      }
+    } else {
+      opts.setScale(nextScale);
+    }
 
     // Keep the content under the midpoint stable (approx).
     const sx = opts.getScrollX();
     const sy = opts.getScrollY();
-    const scaleRatio = nextScale / Math.max(0.0001, pinchStart.scale);
+    const scaleRatio = previewRatio;
 
     if (sx) {
       const midXInView = mid.x - pinchStart.xRect.left;
@@ -273,6 +299,54 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
     prevById.delete(e.pointerId);
     velById.delete(e.pointerId);
 
+    // If a pinch just ended (2->1 or 2->0), commit the scale once.
+    if (pinchStart && lastGesture === "pinch" && touches.size < 2 && lastPinch) {
+      const finalScale = opts.clampScale(lastPinch.nextScale);
+      const mid = lastPinch.midClient;
+      const baseScale = pinchStart.scale;
+      const xRect = pinchStart.xRect;
+      const yRect = pinchStart.yRect;
+      const xLeft0 = pinchStart.xScroll.left;
+      const yTop0 = pinchStart.yScroll.top;
+      const scaleRatio = finalScale / Math.max(0.0001, baseScale);
+
+      try {
+        opts.clearPinchPreviewScale?.();
+      } catch {
+        /* ignore */
+      }
+      try {
+        opts.setScale(finalScale);
+      } catch {
+        /* ignore */
+      }
+      // After the real scale is applied (pdf.js re-layout), re-align scroll to keep the midpoint stable.
+      try {
+        requestAnimationFrame(() => {
+          const sx = opts.getScrollX();
+          const sy = opts.getScrollY();
+          if (sx) {
+            const midXInView = mid.x - xRect.left;
+            const contentX = xLeft0 + midXInView;
+            sx.scrollLeft = contentX * scaleRatio - midXInView;
+          }
+          if (sy) {
+            const midYInView = mid.y - yRect.top;
+            const contentY = yTop0 + midYInView;
+            sy.scrollTop = contentY * scaleRatio - midYInView;
+          }
+        });
+      } catch {
+        /* ignore */
+      }
+      pinchStart = null;
+      lastPinch = null;
+      // Do not start inertia from the tail of a pinch.
+      lastGesture = "none";
+      scheduleApply();
+      return;
+    }
+
     // Start inertia when the last finger lifts after a pan.
     if (touches.size === 0 && lastGesture === "pan") {
       const now = performance.now();
@@ -296,6 +370,15 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
     touches.delete(e.pointerId);
     prevById.delete(e.pointerId);
     velById.delete(e.pointerId);
+    if (touches.size < 2) {
+      pinchStart = null;
+      lastPinch = null;
+      try {
+        opts.clearPinchPreviewScale?.();
+      } catch {
+        /* ignore */
+      }
+    }
     scheduleApply();
   };
 
@@ -324,6 +407,12 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
     prevById.clear();
     velById.clear();
     pinchStart = null;
+    lastPinch = null;
+    try {
+      opts.clearPinchPreviewScale?.();
+    } catch {
+      /* ignore */
+    }
   };
 }
 

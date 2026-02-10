@@ -83,6 +83,9 @@ backdrop-filter: blur(10px);
   overflow-y: auto;
   overflow-x: hidden;
 }
+.main.main-noscroll {
+  overflow-y: hidden;
+}
 
 
 /* Cards */

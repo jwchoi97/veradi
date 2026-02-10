@@ -216,6 +216,8 @@ def _build_baked_pdf_bytes(*, original_pdf_bytes: bytes, annotations: list[dict]
     bake_fontfile = _get_bake_fontfile()
     bake_fontname = _register_bake_font(doc, fontfile=bake_fontfile)
     try:
+        # PERF: Group by page so we only load each page once.
+        by_page: dict[int, list[tuple[str, dict]]] = {}
         for ann in annotations:
             try:
                 page_num = int(ann.get("page") or 1)
@@ -223,25 +225,27 @@ def _build_baked_pdf_bytes(*, original_pdf_bytes: bytes, annotations: list[dict]
                 continue
             if page_num <= 0 or page_num > doc.page_count:
                 continue
+            try:
+                payload = json.loads(ann.get("text") or "{}")
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            typ = payload.get("type")
+            if typ not in ("ink", "highlight", "freetext"):
+                continue
+            data = payload.get("data") or {}
+            if not isinstance(data, dict):
+                data = {}
+            by_page.setdefault(page_num, []).append((typ, data))
+
+        for page_num in sorted(by_page.keys()):
             page = doc.load_page(page_num - 1)
             rect = page.rect
             page_w = float(rect.width or 1.0)
             page_h = float(rect.height or 1.0)
-
-            payload = None
-            try:
-                payload = json.loads(ann.get("text") or "{}")
-            except Exception:
-                payload = None
-            if not isinstance(payload, dict):
-                continue
-
-            typ = payload.get("type")
-            data = payload.get("data") or {}
-            if not isinstance(data, dict):
-                data = {}
-
-            v = data.get("v")
+            for typ, data in by_page.get(page_num, []):
+                v = data.get("v")
 
             # ---------- ink ----------
             if typ == "ink":
@@ -491,6 +495,7 @@ def get_file_inline_url(
     file_id: int,
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
+    variant: str | None = Query(default=None, description="PDF variant: baked|original (default: prefer baked when exists)"),
 ):
     """
     새 탭/새 창에서 열 수 있는 presigned URL을 반환합니다.
@@ -515,13 +520,21 @@ def get_file_inline_url(
 
     preferred_key = file_asset.file_key
     baked_key = derive_baked_key(file_asset.file_key)
-    try:
-        minio_client.stat_object(bucket_name=DEFAULT_BUCKET, object_name=baked_key)
+    v = (variant or "").strip().lower()
+    if v == "original":
+        preferred_key = file_asset.file_key
+    elif v == "baked":
         preferred_key = baked_key
-    except S3Error as e:
-        # If it doesn't exist (or we can't probe it), fall back to original.
-        if e.code not in ("NoSuchKey", "NoSuchObject", "AccessDenied"):
-            raise
+    else:
+        # Default: prefer baked when it exists (read-only share UX),
+        # but allow viewer to force `variant=original` to avoid double-annotating.
+        try:
+            minio_client.stat_object(bucket_name=DEFAULT_BUCKET, object_name=baked_key)
+            preferred_key = baked_key
+        except S3Error as e:
+            # If it doesn't exist (or we can't probe it), fall back to original.
+            if e.code not in ("NoSuchKey", "NoSuchObject", "AccessDenied"):
+                raise
 
     try:
         url = presign_download_url(
@@ -544,6 +557,7 @@ def proxy_file_for_viewer(
     x_user_id: str | None = Header(default=None),
     range_header: str | None = Header(default=None, alias="Range"),
     variant: str | None = Query(default=None, description="PDF variant: baked|original"),
+    perf: int | None = Query(default=None, description="Perf debug: set to 1 to include timing headers/logs"),
 ):
     """파일을 프록시하여 CORS 문제를 해결합니다."""
     user = get_current_user(db, x_user_id)
@@ -560,6 +574,8 @@ def proxy_file_for_viewer(
     ensure_can_manage_project(user, project)
 
     try:
+        perf_enabled = perf == 1
+        t_start = time.perf_counter() if perf_enabled else 0.0
         # Bucket existence should be ensured at startup / first use; cache prevents per-request MinIO calls.
         ensure_bucket(DEFAULT_BUCKET)
 
@@ -582,6 +598,7 @@ def proxy_file_for_viewer(
                 total_size = None
         if total_size is None:
             total_size = _probe_object_size_cached(preferred_key)
+        t_after_size = time.perf_counter() if perf_enabled else 0.0
 
         # Range 요청 지원 (pdf.js가 부분 다운로드를 사용함)
         # IMPORTANT: only support Range when object size is known.
@@ -615,19 +632,21 @@ def proxy_file_for_viewer(
                 raise HTTPException(status_code=416, detail="Invalid Range")
 
         length = (end - start) + 1 if is_partial else None
+        t_before_get = time.perf_counter() if perf_enabled else 0.0
         response = minio_client.get_object(
             bucket_name=DEFAULT_BUCKET,
             object_name=preferred_key,
             offset=start if is_partial else 0,
             length=length,
         )
+        t_after_get = time.perf_counter() if perf_enabled else 0.0
         
         # 파일 스트림을 반환
         def generate():
             try:
                 while True:
                     # Bigger chunks significantly reduce Python/ASGI overhead and improve throughput.
-                    chunk = response.read(256 * 1024)  # 256KB chunks
+                    chunk = response.read(512 * 1024)  # 512KB chunks
                     if not chunk:
                         break
                     yield chunk
@@ -647,6 +666,34 @@ def proxy_file_for_viewer(
             "Access-Control-Allow-Methods": "GET,OPTIONS",
             "Access-Control-Allow-Headers": "*",
         }
+
+        if perf_enabled:
+            try:
+                headers["X-Proxy-Perf"] = "1"
+                headers["X-Proxy-Variant"] = (variant or "original")
+                headers["X-Proxy-IsPartial"] = "1" if is_partial else "0"
+                if supports_range:
+                    headers["X-Proxy-Range"] = f"{start}-{end}"
+                    headers["X-Proxy-TotalSize"] = str(total_size or "")
+                headers["X-Proxy-SizeProbeMs"] = str(int(max(0.0, (t_after_size - t_start) * 1000.0)))
+                headers["X-Proxy-MinIOGetMs"] = str(int(max(0.0, (t_after_get - t_before_get) * 1000.0)))
+            except Exception:
+                pass
+            try:
+                print(
+                    "[proxy-perf]",
+                    {
+                        "file_id": file_id,
+                        "variant": (variant or "original"),
+                        "is_partial": is_partial,
+                        "range": f"{start}-{end}" if is_partial else None,
+                        "size_probe_ms": int(max(0.0, (t_after_size - t_start) * 1000.0)),
+                        "minio_get_ms": int(max(0.0, (t_after_get - t_before_get) * 1000.0)),
+                        "total_size": int(total_size or 0) if supports_range else None,
+                    },
+                )
+            except Exception:
+                pass
 
         if supports_range:
             headers["Accept-Ranges"] = "bytes"
@@ -1059,105 +1106,6 @@ async def upload_handwriting_image(
     }
 
 
-@router.post("/files/{file_id}/annotated-pdf", response_model=ReviewCommentOut)
-async def upload_annotated_pdf(
-    file_id: int,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    x_user_id: str | None = Header(default=None),
-):
-    """
-    Upload a baked/annotated PDF (e.g. saved from Acrobat/Preview).
-
-    Storage:
-    - Writes the baked PDF next to the original PDF object key using postfix: `__baked.pdf`
-      (does NOT replace the original `file_asset.file_key`)
-
-    UI:
-    - Creates a review comment of type "attachment" so the frontend can show the uploaded PDF.
-    """
-    user = get_current_user(db, x_user_id)
-
-    file_asset = db.query(FileAsset).filter(FileAsset.id == file_id).first()
-    if not file_asset:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    project = file_asset.project
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    ensure_can_manage_project(user, project)
-
-    # Ensure review exists
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    if not review:
-        review = Review(file_asset_id=file_id, status="pending")
-        db.add(review)
-        db.commit()
-        db.refresh(review)
-
-    # PDF only
-    if not file.content_type or "pdf" not in file.content_type.lower():
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
-
-    original_name = file.filename or f"annotated-{file_id}.pdf"
-    object_key = derive_baked_key(file_asset.file_key)
-
-    try:
-        ensure_bucket(DEFAULT_BUCKET)
-        up = upload_stream(
-            project_id=file_asset.project_id,
-            fileobj=file.file,
-            original_filename=original_name,
-            content_type="application/pdf",
-            object_key=object_key,
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        try:
-            await file.close()
-        except Exception:
-            pass
-
-    # Presigned URL (7 days) for quick access from UI
-    try:
-        baked_url = presign_download_url(
-            object_key=up.object_key,
-            expires_minutes=60 * 24 * 7,
-            download_filename=original_name,
-            content_type="application/pdf",
-            inline=True,
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    comment = ReviewComment(
-        review_id=review.id,
-        author_id=user.id,
-        comment_type="attachment",
-        text_content=original_name,
-        handwriting_image_url=baked_url,
-    )
-    db.add(comment)
-    db.commit()
-    db.refresh(comment)
-
-    return ReviewCommentOut(
-        id=comment.id,
-        review_id=comment.review_id,
-        author_id=comment.author_id,
-        author_name=user.name,
-        comment_type=comment.comment_type,
-        text_content=comment.text_content,
-        handwriting_image_url=comment.handwriting_image_url,
-        page_number=comment.page_number,
-        x_position=comment.x_position,
-        y_position=comment.y_position,
-        created_at=comment.created_at,
-    )
-
-
 @router.post("/files/{file_id}/stop", response_model=ReviewOut)
 def stop_review(
     file_id: int,
@@ -1267,12 +1215,14 @@ def get_pdf_annotations(
         raise HTTPException(status_code=500, detail=f"Failed to load annotations: {str(e)}")
 
 
-@router.post("/files/{file_id}/annotations", response_model=PDFAnnotationsData)
+@router.post("/files/{file_id}/annotations", response_model=dict)
 def save_pdf_annotations(
     file_id: int,
     annotations_data: PDFAnnotationsData,
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
+    return_full: int | None = Query(default=None, description="Set to 1 to return full annotations payload"),
+    perf: int | None = Query(default=None, description="Perf debug: set to 1 to include timing in response/logs"),
 ):
     """PDF 주석 데이터를 MinIO에 저장합니다."""
     user = get_current_user(db, x_user_id)
@@ -1286,6 +1236,9 @@ def save_pdf_annotations(
         raise HTTPException(status_code=404, detail="Project not found")
 
     ensure_can_manage_project(user, project)
+
+    perf_enabled = perf == 1
+    t0 = time.perf_counter() if perf_enabled else 0.0
 
     # Ensure review exists (workflow), but store JSON next to original key.
     review = db.query(Review).filter(Review.file_asset_id == file_id).first()
@@ -1318,9 +1271,38 @@ def save_pdf_annotations(
         
         data = {"annotations": annotations_list}
         upload_json(object_key=object_key, data=data)
-        
-        # 저장된 데이터 다시 로드하여 반환 (작성자 이름 포함)
-        return get_pdf_annotations(file_id, db, x_user_id)
+
+        if return_full == 1:
+            # Full payload (includes author_name enrichment).
+            out = get_pdf_annotations(file_id, db, x_user_id)
+            if perf_enabled:
+                try:
+                    t1 = time.perf_counter()
+                    payload = None
+                    try:
+                        payload = out.model_dump()  # pydantic v2
+                    except Exception:
+                        payload = out.dict() if hasattr(out, "dict") else {"annotations": getattr(out, "annotations", [])}
+                    return {
+                        "ok": True,
+                        "returned": "full",
+                        "perf_ms": {"total": int(max(0.0, (t1 - t0) * 1000.0))},
+                        **(payload or {}),
+                    }
+                except Exception:
+                    pass
+            return out
+
+        # Minimal response for speed (caller typically doesn't need the full payload).
+        t1 = time.perf_counter() if perf_enabled else 0.0
+        out: dict = {"ok": True, "count": len(annotations_list)}
+        if perf_enabled:
+            out["perf_ms"] = {"total": int(max(0.0, (t1 - t0) * 1000.0))}
+            try:
+                print("[annotations-save-perf]", {"file_id": file_id, "count": len(annotations_list), **out["perf_ms"]})
+            except Exception:
+                pass
+        return out
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save annotations: {str(e)}")
 
@@ -1330,6 +1312,7 @@ def bake_review_pdf(
     file_id: int,
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
+    perf: int | None = Query(default=None, description="Perf debug: set to 1 to include timing in response/logs"),
 ):
     """
     Bake the current annotations JSON into a PDF and store it next to the original PDF.
@@ -1351,18 +1334,23 @@ def bake_review_pdf(
 
     ensure_can_manage_project(user, project)
 
+    perf_enabled = perf == 1
+    t0 = time.perf_counter() if perf_enabled else 0.0
+
     # Load annotations JSON (sidecar next to original)
     ann_key = derive_annotations_key(file_asset.file_key)
     data = get_json(object_key=ann_key) or {}
     anns = data.get("annotations", [])
     if not isinstance(anns, list):
         anns = []
+    t_ann = time.perf_counter() if perf_enabled else 0.0
 
     # Load original PDF bytes
     try:
         original_pdf_bytes = _read_object_bytes(file_asset.file_key)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load original PDF: {str(e)}")
+    t_pdf = time.perf_counter() if perf_enabled else 0.0
 
     # Bake
     try:
@@ -1371,6 +1359,7 @@ def bake_review_pdf(
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to bake PDF: {str(e)}")
+    t_bake = time.perf_counter() if perf_enabled else 0.0
 
     # Upload baked next to original (postfix)
     baked_key = derive_baked_key(file_asset.file_key)
@@ -1384,11 +1373,28 @@ def bake_review_pdf(
         )
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
+    t_up = time.perf_counter() if perf_enabled else 0.0
 
     # Cache the size to make subsequent Range proxy requests fast.
     _OBJECT_SIZE_CACHE[up.object_key] = (len(baked_bytes), time.time() + _OBJECT_SIZE_CACHE_TTL_SECONDS)
 
-    return {"file_id": file_id, "object_key": up.object_key}
+    out: dict = {"file_id": file_id, "object_key": up.object_key}
+    if perf_enabled:
+        try:
+            out["perf_ms"] = {
+                "ann_load": int(max(0.0, (t_ann - t0) * 1000.0)),
+                "pdf_read": int(max(0.0, (t_pdf - t_ann) * 1000.0)),
+                "bake": int(max(0.0, (t_bake - t_pdf) * 1000.0)),
+                "upload": int(max(0.0, (t_up - t_bake) * 1000.0)),
+                "total": int(max(0.0, (t_up - t0) * 1000.0)),
+            }
+        except Exception:
+            pass
+        try:
+            print("[bake-perf]", {"file_id": file_id, "ann_count": len(anns), **(out.get("perf_ms") or {})})
+        except Exception:
+            pass
+    return out
 
 @router.post("/files/{file_id}/annotations/add", response_model=PDFAnnotation)
 def add_pdf_annotation(

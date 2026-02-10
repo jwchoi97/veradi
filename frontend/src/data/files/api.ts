@@ -319,15 +319,6 @@ export async function uploadHandwritingImage(
   return res.data;
 }
 
-export async function uploadAnnotatedPdf(fileId: number, file: File): Promise<ReviewComment> {
-  const formData = new FormData();
-  formData.append("file", file);
-  const res = await api.post<ReviewComment>(`/reviews/files/${fileId}/annotated-pdf`, formData, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
-  return res.data;
-}
-
 export async function stopReview(fileId: number): Promise<Review> {
   const res = await api.post<Review>(`/reviews/files/${fileId}/stop`);
   return res.data;
@@ -428,6 +419,7 @@ export async function getPDFAnnotations(fileId: number): Promise<PDFAnnotationsD
 }
 
 export async function savePDFAnnotations(fileId: number, data: PDFAnnotationsData): Promise<PDFAnnotationsData> {
-  const res = await api.post<PDFAnnotationsData>(`/reviews/files/${fileId}/annotations`, data);
+  // Backend defaults to a minimal response for performance; request the full payload for this helper.
+  const res = await api.post<PDFAnnotationsData>(`/reviews/files/${fileId}/annotations?return_full=1`, data);
   return res.data;
 }

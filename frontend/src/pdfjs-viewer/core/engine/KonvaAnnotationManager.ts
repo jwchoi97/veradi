@@ -17,6 +17,13 @@ type UndoEntry = {
 };
 
 export class KonvaAnnotationManager {
+  // Lifecycle safety:
+  // - In React StrictMode (dev), effects can mount/unmount twice.
+  // - `init()` awaits network; meanwhile `destroy()` may run.
+  // Guard async continuations so we never touch Konva layers after destroy.
+  private destroyed = false;
+  private initSeq = 0;
+
   private listeners: Partial<Record<keyof EngineEvents, Set<(payload: any) => void>>> = {};
   on<K extends keyof EngineEvents>(event: K, handler: (payload: EngineEvents[K]) => void): () => void {
     const set = (this.listeners[event] ??= new Set());
@@ -49,6 +56,13 @@ export class KonvaAnnotationManager {
   private uiLayer: Konva.Layer | null = null;
   private transformer: Konva.Transformer | null = null;
 
+  // Viewport-sized stage for performance:
+  // We keep Konva's canvas buffer limited to the *visible viewport* rather than the entire document.
+  // The "camera" is implemented by translating layers by (-viewOffset.x, -viewOffset.y).
+  private viewOffset = { x: 0, y: 0 }; // document coords of viewport top-left
+  private viewportSyncRaf: number | null = null;
+  private viewportCleanupFns: Array<() => void> = [];
+
   private selectedNodes: Konva.Node[] = [];
   private activePage: number | null = null;
 
@@ -56,8 +70,10 @@ export class KonvaAnnotationManager {
   private selectionHitRect: Konva.Rect | null = null;
   private selectionDeleteBtn: Konva.Group | null = null;
   private isSelectionDragging = false;
+  /** Document-space position where the selection drag started (so it stays under cursor after scroll). */
   private selectionDragStart: { x: number; y: number } | null = null;
-  private selectionDragStartNodes: Array<{ node: Konva.Node; x: number; y: number }> = [];
+  /** Document-space positions of each selected node at drag start. */
+  private selectionDragStartNodes: Array<{ node: Konva.Node; docX: number; docY: number }> = [];
 
   // marquee selection (none mode)
   private isMarqueeSelecting = false;
@@ -91,6 +107,153 @@ export class KonvaAnnotationManager {
   // highlight DOM rendering (behind textLayer)
   private highlightDomLayerByPage: Map<number, HTMLDivElement> = new Map();
   private highlightDomById: Map<string, HTMLDivElement> = new Map();
+
+  private stageToDoc(pos: { x: number; y: number }) {
+    return { x: pos.x + this.viewOffset.x, y: pos.y + this.viewOffset.y };
+  }
+
+  private getContentSizeFromPageMetrics(): { w: number; h: number } {
+    // Document-space size (used only to clamp viewport offsets so we don't inflate scroll ranges)
+    let w = 1;
+    let h = 1;
+    if (this.pageMetrics.size > 0) {
+      let maxX = 0;
+      let maxY = 0;
+      for (const m of this.pageMetrics.values()) {
+        maxX = Math.max(maxX, (m.x || 0) + (m.width || 0));
+        maxY = Math.max(maxY, (m.y || 0) + (m.height || 0));
+      }
+      w = Math.max(1, Math.ceil(maxX + 1));
+      h = Math.max(1, Math.ceil(maxY + 1));
+      return { w, h };
+    }
+    try {
+      w = Math.max(1, this.container.scrollWidth || 1);
+      h = Math.max(1, this.container.scrollHeight || 1);
+    } catch {
+      w = 1;
+      h = 1;
+    }
+    return { w, h };
+  }
+
+  private hasScrollStyle(el: HTMLElement, axis: "x" | "y") {
+    try {
+      const style = window.getComputedStyle(el);
+      const ov = axis === "x" ? style.overflowX : style.overflowY;
+      const hasOverflowStyle =
+        ov === "auto" ||
+        ov === "scroll" ||
+        el.classList.toString().includes(axis === "x" ? "overflow-x-auto" : "overflow-y-auto") ||
+        el.classList.toString().includes(axis === "x" ? "overflow-x-scroll" : "overflow-y-scroll");
+      return hasOverflowStyle;
+    } catch {
+      return false;
+    }
+  }
+
+  private getScrollParent(axis: "x" | "y"): HTMLElement | null {
+    // Find nearest clip/scroll container ancestor for the axis.
+    // We key off overflow style (not current scrollability) because the element still defines the viewport.
+    // For Y, fall back to document.scrollingElement.
+    try {
+      let el: HTMLElement | null = this.container.parentElement as HTMLElement | null;
+      while (el) {
+        if (this.hasScrollStyle(el, axis)) return el;
+        el = el.parentElement as HTMLElement | null;
+      }
+    } catch {
+      /* ignore */
+    }
+    if (axis === "y") return (document.scrollingElement as HTMLElement | null) ?? null;
+    return null;
+  }
+
+  private getViewportClientRect(): { left: number; top: number; right: number; bottom: number } | null {
+    // Visible area is intersection of:
+    // - horizontal clip viewport (x-scroll wrapper)
+    // - vertical clip viewport (outer scroll container / window)
+    const rectFromEl = (el: HTMLElement | null, axis: "x" | "y") => {
+      if (!el) return null;
+      // Treat document scrolling element as full viewport.
+      try {
+        const se = document.scrollingElement as any;
+        if (axis === "y" && (el === se || el === document.documentElement || el === document.body)) {
+          return { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+        }
+      } catch {
+        /* ignore */
+      }
+      try {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+      } catch {
+        return null;
+      }
+    };
+
+    const xr = rectFromEl(this.getScrollParent("x"), "x") ?? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    const yr = rectFromEl(this.getScrollParent("y"), "y") ?? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+
+    const left = Math.max(xr.left, yr.left);
+    const top = Math.max(xr.top, yr.top);
+    const right = Math.min(xr.right, yr.right);
+    const bottom = Math.min(xr.bottom, yr.bottom);
+    if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(right) || !Number.isFinite(bottom)) return null;
+    if (right - left < 1 || bottom - top < 1) return null;
+    return { left, top, right, bottom };
+  }
+
+  private scheduleViewportSync() {
+    if (this.viewportSyncRaf != null) return;
+    try {
+      this.viewportSyncRaf = window.requestAnimationFrame(() => {
+        this.viewportSyncRaf = null;
+        this.applyViewportSync();
+      });
+    } catch {
+      this.viewportSyncRaf = null;
+      this.applyViewportSync();
+    }
+  }
+
+  private applyViewportSync() {
+    if (!this.stage || !this.stageContainerEl || !this.contentLayer || !this.uiLayer) return;
+    const clip = this.getViewportClientRect();
+    const cr = this.container.getBoundingClientRect?.();
+    if (!clip || !cr) return;
+
+    // Viewport in document-space coordinates (container-local, same space as pageMetrics)
+    const rawX = clip.left - cr.left;
+    const rawY = clip.top - cr.top;
+    const rawW = clip.right - clip.left;
+    const rawH = clip.bottom - clip.top;
+    const vw = Math.max(1, Math.floor(rawW));
+    const vh = Math.max(1, Math.floor(rawH));
+
+    const { w: contentW, h: contentH } = this.getContentSizeFromPageMetrics();
+    const maxX = Math.max(0, contentW - vw);
+    const maxY = Math.max(0, contentH - vh);
+    const x = Math.max(0, Math.min(maxX, rawX));
+    const y = Math.max(0, Math.min(maxY, rawY));
+
+    this.viewOffset = { x, y };
+
+    // Place the stage container at the visible "window" inside the full document container.
+    // This avoids huge absolute-positioned elements inflating scroll ranges.
+    this.stageContainerEl.style.left = `${x}px`;
+    this.stageContainerEl.style.top = `${y}px`;
+    this.stageContainerEl.style.width = `${vw}px`;
+    this.stageContainerEl.style.height = `${vh}px`;
+
+    this.stage.size({ width: vw, height: vh });
+
+    // Camera transform: shift layers so document coords map into the viewport canvas.
+    this.contentLayer.position({ x: -x, y: -y });
+    this.uiLayer.position({ x: -x, y: -y });
+
+    this.stage.batchDraw();
+  }
 
   private getStageBox(): DOMRect | null {
     try {
@@ -187,6 +350,25 @@ export class KonvaAnnotationManager {
   }
 
   destroy() {
+    this.destroyed = true;
+    this.initSeq += 1; // invalidate any in-flight init continuation
+    try {
+      for (const fn of this.viewportCleanupFns.splice(0)) {
+        try {
+          fn();
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (this.viewportSyncRaf != null) window.cancelAnimationFrame(this.viewportSyncRaf);
+    } catch {
+      /* ignore */
+    }
+    this.viewportSyncRaf = null;
     try {
       this.cleanupTextEditorDom();
     } catch {
@@ -226,6 +408,8 @@ export class KonvaAnnotationManager {
   }
 
   async init() {
+    this.destroyed = false;
+    const seq = (this.initSeq += 1);
     try {
       const pos = window.getComputedStyle(this.container).position;
       if (!pos || pos === "static") this.container.style.position = "relative";
@@ -264,6 +448,21 @@ export class KonvaAnnotationManager {
 
     this.bindStageEvents();
 
+    // Keep stage in sync with scroll/resize so the canvas stays viewport-sized.
+    try {
+      const onViewportChange = () => this.scheduleViewportSync();
+      window.addEventListener("scroll", onViewportChange, { passive: true, capture: true });
+      window.addEventListener("resize", onViewportChange, { passive: true });
+      const ro = new ResizeObserver(onViewportChange);
+      ro.observe(this.container);
+      this.viewportCleanupFns.push(() => window.removeEventListener("scroll", onViewportChange as any, true as any));
+      this.viewportCleanupFns.push(() => window.removeEventListener("resize", onViewportChange as any));
+      this.viewportCleanupFns.push(() => ro.disconnect());
+    } catch {
+      /* ignore */
+    }
+    this.applyViewportSync();
+
     // When highlight mode is active, let the browser/pdf.js perform real text selection,
     // then convert the selection rects into persistent highlights.
     try {
@@ -273,19 +472,24 @@ export class KonvaAnnotationManager {
     }
     this.highlightSelectionCleanup = null;
     try {
-      const onMouseUp = () => {
+      const applyHighlightsIfHighlightMode = () => {
         if (this.currentMode !== "highlight") return;
         this.applyHighlightsFromNativeSelection();
       };
-      document.addEventListener("mouseup", onMouseUp, { capture: true });
+      document.addEventListener("mouseup", applyHighlightsIfHighlightMode, { capture: true });
+      document.addEventListener("pointerup", applyHighlightsIfHighlightMode, { capture: true });
       this.highlightSelectionCleanup = () => {
-        document.removeEventListener("mouseup", onMouseUp as any, true as any);
+        document.removeEventListener("mouseup", applyHighlightsIfHighlightMode as any, true as any);
+        document.removeEventListener("pointerup", applyHighlightsIfHighlightMode as any, true as any);
       };
     } catch {
       this.highlightSelectionCleanup = null;
     }
 
-    this.annotations = await loadAnnotations(this.fileId, this.userId);
+    const loaded = await loadAnnotations(this.fileId, this.userId);
+    // If we were destroyed (or superseded by another init), bail out silently.
+    if (this.destroyed || seq !== this.initSeq) return;
+    this.annotations = loaded;
     this.reloadAllAnnotations();
   }
 
@@ -303,7 +507,8 @@ export class KonvaAnnotationManager {
         mode === "highlight" ? "text" : mode === "none" ? "default" : mode === "eraser" ? "cell" : "crosshair";
       // Touch gestures (scroll/pinch) are handled at the app layer; keep native actions disabled here.
       this.stageContainerEl.style.touchAction = "none";
-      // In highlight mode we let pdf.js textLayer handle real selection.
+      // In highlight mode, let pointer events pass through so the pdf.js text layer can receive
+      // drag-to-select (PC and pad/pen). Then we apply highlights from native selection on pointerup.
       this.stageContainerEl.style.pointerEvents = mode === "highlight" ? "none" : "auto";
     }
     try {
@@ -469,7 +674,10 @@ export class KonvaAnnotationManager {
         node.points(out);
         node.strokeWidth(data.width || 12);
         node.hitStrokeWidth(Math.max(44, (data.width || 12) * 10));
-        node.globalCompositeOperation("source-over");
+        // Marker-like visual over text
+        node.globalCompositeOperation("multiply");
+        const op = typeof data.opacity === "number" ? data.opacity : this.highlightSettings.opacity;
+        node.opacity(Math.min(1, Math.max(0.05, op)));
         continue;
       }
 
@@ -515,26 +723,9 @@ export class KonvaAnnotationManager {
   }
 
   updateStageSize() {
-    if (!this.stage || !this.stageContainerEl) return;
-    let w = 1;
-    let h = 1;
-    if (this.pageMetrics.size > 0) {
-      let maxX = 0;
-      let maxY = 0;
-      for (const m of this.pageMetrics.values()) {
-        maxX = Math.max(maxX, (m.x || 0) + (m.width || 0));
-        maxY = Math.max(maxY, (m.y || 0) + (m.height || 0));
-      }
-      w = Math.max(1, Math.ceil(maxX + 1));
-      h = Math.max(1, Math.ceil(maxY + 1));
-    } else {
-      w = Math.max(1, this.container.scrollWidth);
-      h = Math.max(1, this.container.scrollHeight);
-    }
-    this.stageContainerEl.style.width = `${w}px`;
-    this.stageContainerEl.style.height = `${h}px`;
-    this.stage.size({ width: w, height: h });
-    this.stage.batchDraw();
+    // Legacy name retained: this now keeps the stage *viewport-sized*.
+    // Callers still invoke this after zoom/layout updates.
+    this.applyViewportSync();
   }
 
   undo() {
@@ -709,7 +900,10 @@ export class KonvaAnnotationManager {
   private getOrCreatePageGroup(pageNum: number): Konva.Group {
     const existing = this.pageGroups.get(pageNum);
     if (existing) return existing;
-    if (!this.contentLayer) throw new Error("Missing contentLayer");
+    // If contentLayer is missing (destroyed / not yet initialized), avoid throwing.
+    // Returning a detached group is safer than crashing; callers should generally be
+    // guarded by lifecycle checks, but this is a last-resort safety net.
+    if (!this.contentLayer) return new Konva.Group({ id: `page-${pageNum}` });
     const g = new Konva.Group({ id: `page-${pageNum}` });
     this.contentLayer.add(g);
     this.pageGroups.set(pageNum, g);
@@ -771,19 +965,31 @@ export class KonvaAnnotationManager {
       this.selectionDeleteBtn = null;
       return;
     }
-    // union bbox in stage coords
+    // Union bbox in document coords so the hit rect matches cursor regardless of scroll.
+    // getClientRect(relativeTo: stage) gives stage coords; add viewOffset to get document coords.
     let minX = Number.POSITIVE_INFINITY;
     let minY = Number.POSITIVE_INFINITY;
     let maxX = Number.NEGATIVE_INFINITY;
     let maxY = Number.NEGATIVE_INFINITY;
     for (const n of this.selectedNodes) {
       try {
-        const r = n.getClientRect({ skipTransform: false });
-        if (!Number.isFinite(r.x) || !Number.isFinite(r.y) || !Number.isFinite(r.width) || !Number.isFinite(r.height)) continue;
-        minX = Math.min(minX, r.x);
-        minY = Math.min(minY, r.y);
-        maxX = Math.max(maxX, r.x + r.width);
-        maxY = Math.max(maxY, r.y + r.height);
+        let docX: number;
+        let docY: number;
+        let r: { x: number; y: number; width: number; height: number };
+        if (this.stage) {
+          r = n.getClientRect({ relativeTo: this.stage, skipTransform: false });
+          docX = r.x + this.viewOffset.x;
+          docY = r.y + this.viewOffset.y;
+        } else {
+          r = n.getClientRect({ skipTransform: false });
+          docX = r.x;
+          docY = r.y;
+        }
+        if (!Number.isFinite(docX) || !Number.isFinite(docY) || !Number.isFinite(r.width) || !Number.isFinite(r.height)) continue;
+        minX = Math.min(minX, docX);
+        minY = Math.min(minY, docY);
+        maxX = Math.max(maxX, docX + r.width);
+        maxY = Math.max(maxY, docY + r.height);
       } catch {
         /* ignore */
       }
@@ -820,8 +1026,12 @@ export class KonvaAnnotationManager {
           /* ignore */
         }
         this.isSelectionDragging = true;
-        this.selectionDragStart = { x: pos.x, y: pos.y };
-        this.selectionDragStartNodes = (this.selectedNodes || []).map((n) => ({ node: n, x: n.x(), y: n.y() }));
+        // Store in document coords so drag follows cursor regardless of scroll
+        this.selectionDragStart = this.stageToDoc(pos);
+        this.selectionDragStartNodes = (this.selectedNodes || []).map((n) => {
+          const p = n.getParent();
+          return { node: n, docX: (p ? p.x() : 0) + n.x(), docY: (p ? p.y() : 0) + n.y() };
+        });
       });
       // keep behind transformer anchors
       this.uiLayer.add(this.selectionHitRect);
@@ -1537,6 +1747,8 @@ export class KonvaAnnotationManager {
   }
 
   private reloadAllAnnotations() {
+    if (this.destroyed) return;
+    if (!this.contentLayer) return;
     for (const g of this.pageGroups.values()) {
       try {
         g.destroyChildren();
@@ -1641,7 +1853,8 @@ export class KonvaAnnotationManager {
         lineCap: "round",
         lineJoin: "round",
         tension: 0.5,
-        globalCompositeOperation: "source-over",
+        // Marker-like visual over text
+        globalCompositeOperation: "multiply",
         perfectDrawEnabled: false,
         shadowForStrokeEnabled: false,
         hitStrokeWidth: Math.max(44, (data.width || 12) * 10),
@@ -2023,6 +2236,7 @@ export class KonvaAnnotationManager {
     stage.on("pointerdown", (evt: Konva.KonvaEventObject<PointerEvent>) => {
       const pos = stage.getPointerPosition();
       if (!pos) return;
+      const docPos = this.stageToDoc(pos);
 
       // Touch is reserved for app-level gestures (scroll/pinch). Ignore all annotation interactions.
       if (getPointerKind((evt as any)?.evt) === "touch") return;
@@ -2088,10 +2302,10 @@ export class KonvaAnnotationManager {
         return;
       }
 
-      const page = hitTestPage(pos);
+      const page = hitTestPage(docPos);
       if (!page) return;
       this.activePage = page;
-      const local = getPageLocal(page, pos);
+      const local = getPageLocal(page, docPos);
       if (!local) return;
 
       if (this.currentMode === "freetext") {
@@ -2117,7 +2331,8 @@ export class KonvaAnnotationManager {
         return;
       }
 
-      // highlight mode uses native text selection (handled outside Konva)
+      // highlight mode: same as PC — drag to select text on the layer below (stage has pointer-events none).
+      // Selection is applied in document mouseup/pointerup via applyHighlightsFromNativeSelection.
       if (this.currentMode === "highlight") return;
 
       // ink drawing (freehand)
@@ -2144,13 +2359,17 @@ export class KonvaAnnotationManager {
     stage.on("pointermove", (evt: Konva.KonvaEventObject<PointerEvent>) => {
       const pos = stage.getPointerPosition();
       if (!pos) return;
+      const docPos = this.stageToDoc(pos);
 
       if (this.currentMode === "none" && this.isSelectionDragging && this.selectionDragStart) {
-        const dx = pos.x - this.selectionDragStart.x;
-        const dy = pos.y - this.selectionDragStart.y;
+        const docPos = this.stageToDoc(pos);
+        const dx = docPos.x - this.selectionDragStart.x;
+        const dy = docPos.y - this.selectionDragStart.y;
         for (const it of this.selectionDragStartNodes) {
           try {
-            it.node.position({ x: it.x + dx, y: it.y + dy });
+            const parent = it.node.getParent();
+            if (!parent) continue;
+            it.node.position({ x: it.docX + dx - parent.x(), y: it.docY + dy - parent.y() });
           } catch {
             /* ignore */
           }
@@ -2192,7 +2411,7 @@ export class KonvaAnnotationManager {
         const page = this.textBoxStart.page;
         const m = this.pageMetrics.get(page);
         if (!m) return;
-        const local = getPageLocal(page, pos);
+        const local = getPageLocal(page, docPos);
         if (!local) return;
         const x1 = this.textBoxStart.x;
         const y1 = this.textBoxStart.y;
@@ -2208,7 +2427,7 @@ export class KonvaAnnotationManager {
 
       if (!this.isDrawing || !this.activePage) return;
       const page = this.activePage;
-      const local = getPageLocal(page, pos);
+      const local = getPageLocal(page, docPos);
       if (!local) return;
       this.currentPoints.push(local.x, local.y);
       if (this.currentDrawing) {
@@ -2219,10 +2438,12 @@ export class KonvaAnnotationManager {
 
     stage.on("pointerup", () => {
       const pos = stage.getPointerPosition();
+      const docPos = pos ? this.stageToDoc(pos) : null;
 
       if (this.currentMode === "none" && this.isSelectionDragging && this.selectionDragStart) {
-        const dxPx = (pos?.x ?? this.selectionDragStart.x) - this.selectionDragStart.x;
-        const dyPx = (pos?.y ?? this.selectionDragStart.y) - this.selectionDragStart.y;
+        const docPosNow = pos ? this.stageToDoc(pos) : this.selectionDragStart;
+        const dxPx = docPosNow.x - this.selectionDragStart.x;
+        const dyPx = docPosNow.y - this.selectionDragStart.y;
         this.isSelectionDragging = false;
         this.selectionDragStart = null;
 
@@ -2237,8 +2458,11 @@ export class KonvaAnnotationManager {
             if (!id) continue;
             const pageNum = this.getPageForNode(it.node);
             if (!pageNum) continue;
-            const dx = (it.node.x() ?? 0) - it.x;
-            const dy = (it.node.y() ?? 0) - it.y;
+            const parent = it.node.getParent();
+            const curDocX = (parent ? parent.x() : 0) + (it.node.x() ?? 0);
+            const curDocY = (parent ? parent.y() : 0) + (it.node.y() ?? 0);
+            const dx = curDocX - it.docX;
+            const dy = curDocY - it.docY;
             if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
             const arr = perPage.get(pageNum) ?? [];
             arr.push({ id, node: it.node, dx, dy });
@@ -2417,7 +2641,7 @@ export class KonvaAnnotationManager {
         const m = this.pageMetrics.get(page);
         this.isTextBoxCreating = false;
         if (!m) return;
-        const local = getPageLocal(page, pos);
+        const local = docPos ? getPageLocal(page, docPos) : null;
         let x = this.textBoxStart.x;
         let y = this.textBoxStart.y;
         let w = 240;
@@ -2617,8 +2841,10 @@ export class KonvaAnnotationManager {
     }
 
     const stageBox = this.stage.container().getBoundingClientRect();
-    const screenX = stageBox.left + m.x + x;
-    const screenY = stageBox.top + m.y + y;
+    // Stage is viewport-sized and layers are translated by (-viewOffset).
+    // Convert document coords -> stage coords by subtracting viewOffset.
+    const screenX = stageBox.left + (m.x + x - this.viewOffset.x);
+    const screenY = stageBox.top + (m.y + y - this.viewOffset.y);
 
     const EDIT_MIN_W = 320;
     const TOPBAR_H = 38;

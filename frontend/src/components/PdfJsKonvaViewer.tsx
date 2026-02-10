@@ -4,6 +4,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import { EventBus, PDFLinkService, PDFViewer } from "pdfjs-dist/web/pdf_viewer.mjs";
 import "pdfjs-dist/web/pdf_viewer.css";
 import Konva from "konva";
+import { Mail } from "lucide-react";
 import { getAuthedUser } from "@/auth";
 import { KonvaAnnotationManager } from "@/pdfjs-viewer/main";
 import { attachTouchGestures } from "@/pdfjs-viewer/core/input/touchGestures";
@@ -38,8 +39,10 @@ const PDF_JS_KONVA_VIEWER_CSS = `
 .pdf-viewer-toolbar .spinbtn{appearance:none;border:0;background:rgba(107,114,128,.22);color:rgba(243,244,246,.92);height:15px;min-width:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;line-height:1;font-size:10px}
 .pdf-viewer-toolbar .spinbtn:hover{background:rgba(107,114,128,.32)}
 .pdf-viewer-toolbar .spinsep{width:100%;height:1px;background:rgba(148,163,184,.28)}
-.pdf-viewer-main{position:relative;flex:1 1 auto;min-height:0}
-.pdf-viewer-xscroll{width:100%;height:100%;overflow-x:auto;overflow-y:visible;overscroll-behavior:contain}
+.pdf-viewer-main{position:relative;flex:0 0 auto}
+/* Horizontal scroll wrapper: x only. If overflow-x is scrollable, overflow-y: visible
+   can compute to overflow-y: auto in browsers and create an unwanted inner vertical scrollbar. */
+.pdf-viewer-xscroll{width:100%;overflow-x:auto;overflow-y:hidden;overscroll-behavior:contain;background:#374151}
 .pdf-viewer-container{width:100%}
 .pdf-viewer-viewer{position:relative}
 .pdf-viewer-tool-settings{position:fixed;width:260px;background:#0b1220;color:#f9fafb;border:1px solid rgba(255,255,255,.14);border-radius:12px;padding:10px 10px 12px;z-index:80;box-shadow:0 10px 30px rgba(0,0,0,.35)}
@@ -66,6 +69,8 @@ export type PdfJsKonvaViewerProps = {
   onFullscreenChange?: (enabled: boolean) => void;
   onStartReview?: () => void;
   onStopReview?: () => void;
+  commentsOpen?: boolean;
+  onToggleComments?: () => void;
 };
 
 export default function PdfJsKonvaViewer({
@@ -77,10 +82,28 @@ export default function PdfJsKonvaViewer({
   onFullscreenChange,
   onStartReview,
   onStopReview,
+  commentsOpen = false,
+  onToggleComments,
 }: PdfJsKonvaViewerProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<HTMLDivElement | null>(null);
+  const perfEnabledRef = useRef(false);
+  const perfRef = useRef<{
+    loadId: string | null;
+    loadUrl: string | null;
+    tLoadStart: number | null;
+    tTaskResolved: number | null;
+    tPagesInit: number | null;
+    tFirstPageRendered: number | null;
+  }>({
+    loadId: null,
+    loadUrl: null,
+    tLoadStart: null,
+    tTaskResolved: null,
+    tPagesInit: null,
+    tFirstPageRendered: null,
+  });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [viewerReady, setViewerReady] = useState(false);
@@ -132,6 +155,58 @@ export default function PdfJsKonvaViewer({
 
   // Zoom clamp (50% ~ 300%)
   const clampScale = useCallback((n: number) => Math.min(3, Math.max(0.5, n)), []);
+
+  // Perf debug is opt-in to avoid console spam in production.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const qs = new URLSearchParams(window.location.search);
+      perfEnabledRef.current = (window as any).__PDF_PERF__ === true || qs.get("pdfPerf") === "1";
+    } catch {
+      perfEnabledRef.current = false;
+    }
+  }, []);
+
+  // Pinch-zoom preview: apply transient CSS transform during pinch and commit scale on end.
+  const pinchPreviewStyleRef = useRef<null | { transform: string; transformOrigin: string; willChange: string }> (null);
+  const setPinchPreviewScale = useCallback((ratio: number, midClient: { x: number; y: number }) => {
+    const el = containerRef.current;
+    if (!el) return;
+    if (!Number.isFinite(ratio) || ratio <= 0) return;
+    const r = el.getBoundingClientRect();
+    const ox = midClient.x - r.left;
+    const oy = midClient.y - r.top;
+
+    try {
+      if (!pinchPreviewStyleRef.current) {
+        pinchPreviewStyleRef.current = {
+          transform: el.style.transform || "",
+          transformOrigin: el.style.transformOrigin || "",
+          willChange: el.style.willChange || "",
+        };
+      }
+      el.style.willChange = "transform";
+      el.style.transformOrigin = `${Math.max(0, ox)}px ${Math.max(0, oy)}px`;
+      // Keep it light: only scale, no translate (scroll alignment handled in touchGestures).
+      el.style.transform = `scale(${ratio})`;
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const clearPinchPreviewScale = useCallback(() => {
+    const el = containerRef.current;
+    const prev = pinchPreviewStyleRef.current;
+    pinchPreviewStyleRef.current = null;
+    if (!el || !prev) return;
+    try {
+      el.style.transform = prev.transform;
+      el.style.transformOrigin = prev.transformOrigin;
+      el.style.willChange = prev.willChange;
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   // Zoom/relayout performance: coalesce expensive work
   const pendingSyncRafRef = useRef<number | null>(null);
@@ -346,13 +421,33 @@ export default function PdfJsKonvaViewer({
     // 컨테이너 높이를 콘텐츠에 맞춰서 부모 스크롤이 작동하도록
     const updateContainerHeight = () => {
       if (!container || !viewer) return;
-      const scrollHeight = Math.max(viewer.scrollHeight, container.scrollHeight);
-      // wrapper의 높이를 조정하여 부모가 스크롤할 수 있도록
-      const wrapper = container.parentElement;
-      if (wrapper) {
-        wrapper.style.height = `${scrollHeight}px`;
-        wrapper.style.minHeight = "100%";
+      // IMPORTANT:
+      // - `container` is absolutely positioned (inset: 0) inside its parent wrapper.
+      // - If we set wrapper.height based on `container.scrollHeight`, wrapper height can become
+      //   self-referential and fail to shrink after zoom-out (overscroll / empty space).
+      //
+      // So we measure the *actual PDF content* height using the last `.page` element.
+      const wrapper = container.parentElement as HTMLElement | null;
+      if (!wrapper) return;
+
+      const pages = Array.from(viewer.querySelectorAll(".page")) as HTMLElement[];
+      let contentH = 0;
+
+      if (pages.length > 0) {
+        const last = pages[pages.length - 1]!;
+        const cBox = container.getBoundingClientRect();
+        const pBox = last.getBoundingClientRect();
+        // Rect-delta is stable even when an outer ancestor scrolls.
+        contentH = Math.max(0, pBox.bottom - cBox.top);
+      } else {
+        // Fallback: use viewer scrollHeight only (avoid container.scrollHeight self-inflation).
+        contentH = Math.max(0, viewer.scrollHeight);
       }
+
+      // Small tail padding so the final page isn't clipped by rounding/layout jitter.
+      const nextH = Math.max(1, Math.ceil(contentH + 24));
+      wrapper.style.height = `${nextH}px`;
+      wrapper.style.minHeight = "100%";
     };
     const scheduleHeight = () => {
       if (pendingHeightRafRef.current !== null) return;
@@ -392,6 +487,16 @@ export default function PdfJsKonvaViewer({
     };
 
     const onPagesInit = () => {
+      if (perfEnabledRef.current && perfRef.current.tPagesInit == null) {
+        perfRef.current.tPagesInit = performance.now();
+        const t0 = perfRef.current.tLoadStart;
+        if (t0 != null) {
+          console.log("[pdf-perf] pagesinit", {
+            loadId: perfRef.current.loadId,
+            ms_since_load_start: Math.round(perfRef.current.tPagesInit - t0),
+          });
+        }
+      }
       try {
         pdfViewer.currentScaleValue = "page-width";
         setTotalPages(pdfViewer.pagesCount || pdfDocRef.current?.numPages || 0);
@@ -448,14 +553,25 @@ export default function PdfJsKonvaViewer({
     eventBus.on("pagesinit", onPagesInit);
     eventBus.on("pagechanging", onPageChange);
     eventBus.on("scalechanging", onScaleChange);
-    eventBus.on("pagerendered", () => {
+    const onPageRendered = () => {
+      if (perfEnabledRef.current && perfRef.current.tFirstPageRendered == null) {
+        perfRef.current.tFirstPageRendered = performance.now();
+        const t0 = perfRef.current.tLoadStart;
+        if (t0 != null) {
+          console.log("[pdf-perf] first pagerendered", {
+            loadId: perfRef.current.loadId,
+            ms_since_load_start: Math.round(perfRef.current.tFirstPageRendered - t0),
+          });
+        }
+      }
       // 렌더 이벤트는 매우 자주 발생할 수 있으므로 높이만 빠르게 갱신하고,
       // 줌 직후에는 scalechanging에서 디바운스로 처리한다.
       scheduleHeight();
       if (performance.now() - lastScaleChangeAtRef.current > 250) {
         scheduleHeavySync(0);
       }
-    });
+    };
+    eventBus.on("pagerendered", onPageRendered);
 
     // 리사이즈 옵저버로 높이 추적
     const resizeObserver = new ResizeObserver(() => {
@@ -483,6 +599,7 @@ export default function PdfJsKonvaViewer({
       eventBus.off("pagesinit", onPagesInit);
       eventBus.off("pagechanging", onPageChange);
       eventBus.off("scalechanging", onScaleChange);
+      eventBus.off("pagerendered", onPageRendered);
       container.removeEventListener("wheel", handleWheel);
       if (sp) sp.removeEventListener("scroll", onScroll as any);
       resizeObserver.disconnect();
@@ -524,24 +641,84 @@ export default function PdfJsKonvaViewer({
         const headers: Record<string, string> = {};
         if (typeof me?.id === "number") headers["X-User-Id"] = String(me.id);
 
-        console.log("Loading PDF from:", fileUrl);
-        const task = pdfjsLib.getDocument({
-          url: fileUrl,
-          httpHeaders: headers,
-          withCredentials: true,
-          // Reduce request churn (especially over high-latency links) while still enabling range loading.
-          // 1MB is a good balance for PDFs served via our proxy.
-          rangeChunkSize: 1024 * 1024,
-        });
+        const loadId = `${fileId}-${Date.now()}`;
+        const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+        const createTask = (url: string) => {
+          // Vite base (supports deployments under subpaths)
+          const base = (() => {
+            try {
+              const b = (import.meta as any)?.env?.BASE_URL;
+              if (typeof b === "string" && b.length) return b.endsWith("/") ? b : `${b}/`;
+            } catch {
+              /* ignore */
+            }
+            return "/";
+          })();
+          const docOpts: any = {
+            url,
+            // Reduce request churn (especially over high-latency links) while still enabling range loading.
+            // Larger chunk reduces Range request count dramatically for proxy + high latency links.
+            rangeChunkSize: 4 * 1024 * 1024,
+            // Avoid prefetching many pages on open (helps large PDFs and slow links).
+            disableAutoFetch: true,
+            // ✅ Fix: provide CMap + standard font data for CID fonts.
+            cMapUrl: `${base}cmaps/`,
+            cMapPacked: true,
+            standardFontDataUrl: `${base}standard_fonts/`,
+          };
+          docOpts.httpHeaders = headers;
+          docOpts.withCredentials = true;
+          return pdfjsLib.getDocument(docOpts);
+        };
+
+        // Always use proxy URL to avoid cross-origin/CORS issues with presigned URLs.
+        const resolvedUrl = fileUrl;
+        perfRef.current = {
+          loadId,
+          loadUrl: resolvedUrl,
+          tLoadStart: t0,
+          tTaskResolved: null,
+          tPagesInit: null,
+          tFirstPageRendered: null,
+        };
+        if (perfEnabledRef.current) {
+          console.log("[pdf-perf] load start", { loadId, url: resolvedUrl });
+        }
+
+        const task = createTask(resolvedUrl);
         loadingTaskRef.current = task;
-        const pdfDocument = await task.promise;
+        try {
+          (task as any).onProgress = (p: any) => {
+            if (!perfEnabledRef.current) return;
+            // Avoid noisy logs; only print occasional progress updates.
+            const loaded = Number(p?.loaded || 0);
+            const total = Number(p?.total || 0);
+            if (loaded <= 0) return;
+            if (total > 0 && loaded < total) {
+              // log at ~25% intervals
+              const pct = Math.floor((loaded / total) * 100);
+              if (pct % 25 === 0) console.log("[pdf-perf] load progress", { loadId, pct, loaded, total });
+            }
+          };
+        } catch {
+          /* ignore */
+        }
+
+        const pdfDocument: PDFDocumentProxy = await task.promise;
         if (cancelled) return;
 
-        console.log("PDF loaded, setting document...");
+        if (perfEnabledRef.current) {
+          const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
+          perfRef.current.tTaskResolved = t1;
+          console.log("[pdf-perf] task resolved", {
+            loadId,
+            ms_since_load_start: perfRef.current.tLoadStart != null ? Math.round(t1 - perfRef.current.tLoadStart) : null,
+            pages: (pdfDocument as any)?.numPages,
+          });
+        }
         pdfDocRef.current = pdfDocument;
         linkService.setDocument(pdfDocument);
         pdfViewerRef.current?.setDocument(pdfDocument);
-        console.log("PDF document set successfully");
         setDocReady(true);
       } catch (e: any) {
         console.error("Failed to load PDF", e);
@@ -564,7 +741,7 @@ export default function PdfJsKonvaViewer({
       }
       loadingTaskRef.current = null;
     };
-  }, [fileUrl, viewerReady, linkService]);
+  }, [fileUrl, viewerReady, linkService, fileId]);
 
   // Cleanup debounce timer on unmount
   useEffect(() => {
@@ -784,6 +961,8 @@ export default function PdfJsKonvaViewer({
                 pdfViewer.currentScale = clampScale(next);
               },
               clampScale,
+              setPinchPreviewScale,
+              clearPinchPreviewScale,
             });
             cleanupFns.push(detach);
           }
@@ -1239,6 +1418,17 @@ export default function PdfJsKonvaViewer({
           >
             {saving ? "저장 중..." : "저장"}
           </button>
+          {typeof onToggleComments === "function" && (
+            <button
+              type="button"
+              className={`btn ${commentsOpen ? "active" : ""}`}
+              onClick={onToggleComments}
+              title="코멘트"
+              aria-label="코멘트"
+            >
+              <Mail className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </div>
 

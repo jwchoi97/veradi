@@ -205,7 +205,8 @@ def upload_json(
     Upload JSON data to MinIO as a JSON file.
     """
     ensure_bucket(bucket)
-    json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    # NOTE: avoid pretty-print (indent) for performance and smaller payloads.
+    json_bytes = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     fileobj = io.BytesIO(json_bytes)
     
     try:
