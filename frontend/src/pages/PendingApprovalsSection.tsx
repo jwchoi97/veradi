@@ -46,7 +46,12 @@ function formatDeptList(u: PendingUser): string {
   return depts.map((d) => prettyDepartment(d)).join(", ");
 }
 
-export default function PendingApprovalsSection() {
+type PendingApprovalsSectionProps = {
+  /** 탭 안에 넣을 때 true: 섹션 카드/제목 없이 내용만 렌더 */
+  embedded?: boolean;
+};
+
+export default function PendingApprovalsSection({ embedded }: PendingApprovalsSectionProps) {
   const me = getAuthedUser();
 
   const adminId = me?.id ?? null;
@@ -107,21 +112,25 @@ export default function PendingApprovalsSection() {
     }
   }
 
-  return (
-    <section className="mt-6 rounded-3xl border border-slate-200/60 bg-white/80 p-5 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.55)] backdrop-blur">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold tracking-tight text-slate-900">가입 요청</h2>
-          <p className="mt-1 text-sm leading-6 text-slate-600">
-            승인 대기(PENDING) 계정의 요청 정보를 확인하고 승인/거절할 수 있어요.
-          </p>
+  const content = (
+    <>
+      {!embedded && (
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold tracking-tight text-slate-900">가입 요청</h2>
+            <p className="mt-1 text-sm leading-6 text-slate-600">
+              승인 대기(PENDING) 계정의 요청 정보를 확인하고 승인/거절할 수 있어요.
+            </p>
+          </div>
         </div>
-
+      )}
+      <div className={`flex items-center justify-between gap-3 ${embedded ? "" : "mt-4"}`}>
+        {embedded && <span className="text-sm text-slate-600">승인 대기: {items.length}건</span>}
         <button
           type="button"
           onClick={() => void refresh()}
           disabled={!canUse || loading}
-          className="h-10 rounded-2xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          className="ml-auto h-10 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
         >
           {loading ? "불러오는 중..." : "새로고침"}
         </button>
@@ -129,7 +138,7 @@ export default function PendingApprovalsSection() {
 
       {!isAdmin && (
         <div className="mt-4 rounded-2xl border border-amber-200/60 bg-amber-50/70 px-4 py-3 text-sm text-amber-900">
-          관리자(ADMIN)만 접근할 수 있어요. 현재 계정 role: <b>{me?.role ?? "UNKNOWN"}</b>
+          관리자(ADMIN)만 접근할 수 있어요. 현재 계정 role: <b className="text-slate-900">{me?.role ?? "UNKNOWN"}</b>
         </div>
       )}
 
@@ -141,98 +150,103 @@ export default function PendingApprovalsSection() {
 
       {canUse && (
         <>
-          <div className="mt-3 flex items-center justify-between text-sm text-gray-600">
-            <span>
-              승인 대기: <b className="text-gray-900">{items.length}</b> 건
-            </span>
-          </div>
+          {!embedded && (
+            <div className="mt-3 flex items-center justify-between text-sm text-slate-600">
+              <span>
+                승인 대기: <b className="text-slate-900">{items.length}</b> 건
+              </span>
+            </div>
+          )}
 
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[920px] border-collapse text-sm">
-              <thead>
-                <tr className="border-b bg-gray-50 text-left">
-                  <th className="px-3 py-2">ID</th>
-                  <th className="px-3 py-2">이름/아이디</th>
-                  <th className="px-3 py-2">요청 소속 팀</th>
-                  <th className="px-3 py-2">전화번호</th>
-                  <th className="px-3 py-2">부여 Role</th>
-                  <th className="px-3 py-2">액션</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {items.length === 0 ? (
+          <div className="mt-3 w-full max-w-full rounded-2xl border border-slate-200/60 bg-white overflow-hidden">
+            <div className="max-w-full overflow-x-auto" style={{ scrollbarGutter: "stable" }}>
+              <table className="w-full min-w-[920px] text-sm">
+                <thead className="bg-slate-50/90 backdrop-blur sticky top-0 z-10">
                   <tr>
-                    <td className="px-3 py-6 text-gray-500" colSpan={6}>
-                      승인 대기 계정이 없어요.
-                    </td>
+                    <th className="text-left px-4 py-3 text-xs font-semibold tracking-wide text-slate-600">ID</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold tracking-wide text-slate-600">이름/아이디</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold tracking-wide text-slate-600">요청 소속 팀</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold tracking-wide text-slate-600">전화번호</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold tracking-wide text-slate-600">부여 Role</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold tracking-wide text-slate-600">액션</th>
                   </tr>
-                ) : (
-                  items.map((u) => {
-                    const nm = trimOrEmpty((u as any).name);
-                    return (
-                      <tr key={u.id} className="border-b">
-                        <td className="px-3 py-2">{u.id}</td>
-
-                        <td className="px-3 py-2">
-                          <div className="flex flex-col">
-                            <span className="font-semibold text-gray-900">{nm || "-"}</span>
-                            <span className="text-xs text-gray-500">{u.username}</span>
-                          </div>
-                        </td>
-
-                        <td className="px-3 py-2">
-                          <div className="text-sm text-gray-900">{formatDeptList(u)}</div>
-                          <div className="text-[11px] text-gray-500 mt-1">(회원가입 시 선택한 소속)</div>
-                        </td>
-
-                        <td className="px-3 py-2">{maskPhone((u as any).phone_number)}</td>
-
-                        <td className="px-3 py-2">
-                          <select
-                            value={rolePick[u.id] ?? "MEMBER"}
-                            onChange={(e) =>
-                              setRolePick((prev) => ({
-                                ...prev,
-                                [u.id]: e.target.value as ApproveRole,
-                              }))
-                            }
-                            className="rounded-lg border border-gray-300 bg-white px-2 py-1"
-                          >
-                            <option value="MEMBER">MEMBER</option>
-                            <option value="LEAD">LEAD</option>
-                          </select>
-                        </td>
-
-                        <td className="px-3 py-2">
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => void onApprove(u.id)}
-                              className="rounded-xl bg-black px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
+                </thead>
+                <tbody>
+                  {items.length === 0 ? (
+                    <tr>
+                      <td className="px-4 py-6 text-slate-500 text-sm" colSpan={6}>
+                        승인 대기 계정이 없어요.
+                      </td>
+                    </tr>
+                  ) : (
+                    items.map((u) => {
+                      const nm = trimOrEmpty((u as any).name);
+                      return (
+                        <tr key={u.id} className="border-t border-slate-100 hover:bg-slate-50/70">
+                          <td className="px-4 py-3 text-slate-700">{u.id}</td>
+                          <td className="px-4 py-3">
+                            <div className="flex flex-col">
+                              <span className="font-medium text-slate-900">{nm || "-"}</span>
+                              <span className="text-xs text-slate-500">{u.username}</span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="text-slate-700">{formatDeptList(u)}</div>
+                            <div className="text-[11px] text-slate-500 mt-1">(회원가입 시 선택한 소속)</div>
+                          </td>
+                          <td className="px-4 py-3 text-slate-700">{maskPhone((u as any).phone_number)}</td>
+                          <td className="px-4 py-3">
+                            <select
+                              value={rolePick[u.id] ?? "MEMBER"}
+                              onChange={(e) =>
+                                setRolePick((prev) => ({
+                                  ...prev,
+                                  [u.id]: e.target.value as ApproveRole,
+                                }))
+                              }
+                              className="h-9 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 focus:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-200"
                             >
-                              승인
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void onReject(u.id)}
-                              className="rounded-xl border border-gray-300 bg-white px-3 py-1.5 text-xs hover:bg-gray-50"
-                            >
-                              거절
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+                              <option value="MEMBER">MEMBER</option>
+                              <option value="LEAD">LEAD</option>
+                            </select>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void onApprove(u.id)}
+                                className="rounded-xl border border-indigo-600 bg-indigo-700 px-3 py-1.5 text-xs font-semibold text-white shadow-[0_14px_34px_-22px_rgba(15,11,152,0.85)] hover:bg-indigo-800"
+                              >
+                                승인
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void onReject(u.id)}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                              >
+                                거절
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
 
-          <p className="mt-3 text-xs text-gray-400">거절은 계정을 DB에서 삭제합니다(재신청 가능).</p>
+          <p className="mt-3 text-xs text-slate-500">거절은 계정을 DB에서 삭제합니다(재신청 가능).</p>
         </>
       )}
+    </>
+  );
+
+  if (embedded) return content;
+  return (
+    <section className="mt-6 rounded-3xl border border-slate-200/60 bg-white/80 p-5 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.55)] backdrop-blur">
+      {content}
     </section>
   );
 }

@@ -11,6 +11,7 @@ import MyPage from "@/pages/MyPage";
 import LoginPage from "@/pages/LoginPage";
 import HomePage from "@/pages/HomePage";
 import SignupPage from "@/pages/SignupPage";
+import ForgotPasswordPage from "@/pages/ForgotPasswordPage";
 import ReviewPage from "@/pages/ReviewPage";
 
 import { isAuthed } from "@/auth";
@@ -111,6 +112,7 @@ export function buildRoutes(): RouteObject[] {
   return [
     { path: "/login", element: <LoginPage /> },
     { path: "/signup", element: <SignupPage /> },
+    { path: "/forgot-password", element: <ForgotPasswordPage /> },
     { path: "/404", element: <NotFoundPage /> },
 
     {

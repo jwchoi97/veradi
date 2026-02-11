@@ -160,7 +160,7 @@ class SignupRequest(BaseModel):
 class UserOut(BaseModel):
     id: int
     username: str
-    name: str
+    name: Optional[str] = None
     role: UserRole
 
     # legacy single
@@ -309,4 +309,25 @@ class ApproveUserRequest(BaseModel):
 
     # ✅ 승인에서는 소속팀 결정 안함(기본 None). (원하면 서버에서 무시해도 됨)
     departments: Optional[List[Department]] = None
+
+
+class AdminUserUpdateRequest(BaseModel):
+    """Admin 전용: 유저의 역할/소속팀 변경"""
+    role: Optional[UserRole] = None
+    departments: Optional[List[Department]] = None
+
+
+# -------- 비밀번호 찾기 / 재설정 --------
+class ForgotPasswordVerifyRequest(BaseModel):
+    """아이디 + 전화번호로 본인 확인"""
+    username: str = Field(min_length=1, max_length=64)
+    phone_number: str = Field(min_length=8, max_length=32)
+
+
+class ForgotPasswordResetRequest(BaseModel):
+    """본인 확인 후 새 비밀번호로 재설정"""
+    username: str = Field(min_length=1, max_length=64)
+    phone_number: str = Field(min_length=8, max_length=32)
+    new_password: str = Field(min_length=8, max_length=128)
+    new_password_confirm: str = Field(min_length=8, max_length=128)
 

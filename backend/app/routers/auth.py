@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,9 @@ from ..schemas import (
     PendingUserOut,
     PendingUserListOut,
     ApproveUserRequest,
+    AdminUserUpdateRequest,
+    ForgotPasswordVerifyRequest,
+    ForgotPasswordResetRequest,
 )
 from ..mariadb.models import FileAsset, Project, Activity
 from sqlalchemy import func, extract
@@ -183,6 +187,35 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     )
 
 
+@router.post("/forgot-password/verify")
+def forgot_password_verify(payload: ForgotPasswordVerifyRequest, db: Session = Depends(get_db)):
+    """아이디와 가입 시 등록한 전화번호가 일치하는지 확인. 일치하면 비밀번호 재설정 단계로 진행 가능."""
+    user = db.query(User).filter(User.username == payload.username).first()
+    phone_digits = normalize_phone_digits(payload.phone_number)
+    if len(phone_digits) < 10 or len(phone_digits) > 11:
+        raise HTTPException(status_code=400, detail="INVALID_PHONE_NUMBER")
+    if not user or user.phone_number != phone_digits:
+        raise HTTPException(status_code=400, detail="아이디와 등록된 전화번호가 일치하지 않습니다.")
+    return {"ok": True}
+
+
+@router.post("/forgot-password/reset")
+def forgot_password_reset(payload: ForgotPasswordResetRequest, db: Session = Depends(get_db)):
+    """아이디·전화번호 확인 후 새 비밀번호로 변경."""
+    if payload.new_password != payload.new_password_confirm:
+        raise HTTPException(status_code=400, detail="PASSWORD_MISMATCH")
+    user = db.query(User).filter(User.username == payload.username).first()
+    phone_digits = normalize_phone_digits(payload.phone_number)
+    if len(phone_digits) < 10 or len(phone_digits) > 11:
+        raise HTTPException(status_code=400, detail="INVALID_PHONE_NUMBER")
+    if not user or user.phone_number != phone_digits:
+        raise HTTPException(status_code=400, detail="아이디와 등록된 전화번호가 일치하지 않습니다.")
+    user.password_hash = hash_password(payload.new_password)
+    db.add(user)
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/signup", response_model=UserOut, status_code=201)
 def signup(payload: SignupRequest, db: Session = Depends(get_db)):
     if payload.password != payload.password_confirm:
@@ -237,6 +270,77 @@ def list_pending(db: Session = Depends(get_db), x_user_id: str | None = Header(d
         total=len(items),
         items=[_pending_out(u) for u in items],
     )
+
+
+@router.get("/users", response_model=List[UserOut])
+def list_all_users(
+    department: Department | None = None,
+    role: UserRole | None = None,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """Admin only. List all registered users. Optional filters: department (소속 팀), role (부여된 역할)."""
+    require_admin(db, x_user_id)
+
+    query = db.query(User).order_by(User.id.asc())
+    if role is not None:
+        query = query.filter(User.role == role)
+    if department is not None:
+        query = query.filter(User.department == department)
+
+    items = query.all()
+    return [_user_out(u) for u in items]
+
+
+@router.delete("/users/{user_id}", status_code=204)
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """Admin only. Permanently delete a user from the DB."""
+    require_admin(db, x_user_id)
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.role == UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Cannot delete ADMIN account")
+
+    db.delete(user)
+    db.commit()
+    return
+
+
+@router.patch("/users/{user_id}", response_model=UserOut)
+def update_user(
+    user_id: int,
+    payload: AdminUserUpdateRequest,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """Admin only. Update user role and/or departments."""
+    require_admin(db, x_user_id)
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if payload.role is not None:
+        if user.role == UserRole.ADMIN:
+            raise HTTPException(status_code=403, detail="Cannot change ADMIN role")
+        if payload.role == UserRole.ADMIN:
+            raise HTTPException(status_code=403, detail="Cannot assign ADMIN role via this endpoint")
+        user.role = payload.role
+        db.add(user)
+    if payload.departments is not None:
+        if len(payload.departments) == 0:
+            raise HTTPException(status_code=400, detail="At least one department required")
+        _set_user_departments(db, user, payload.departments)
+
+    db.commit()
+    db.refresh(user)
+    return _user_out(user)
 
 
 def _coerce_user_role_for_approval(v) -> UserRole:
