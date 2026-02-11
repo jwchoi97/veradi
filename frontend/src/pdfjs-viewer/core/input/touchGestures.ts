@@ -228,24 +228,25 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
       } catch {
         /* ignore */
       }
+      // Do NOT update scroll during pinch when using CSS preview: the viewer keeps
+      // the midpoint fixed via transform-origin; updating scroll here would double-apply
+      // and cause wobble + wrong scroll (layout size unchanged during CSS scale).
     } else {
       opts.setScale(nextScale);
-    }
-
-    // Keep the content under the midpoint stable (approx).
-    const sx = opts.getScrollX();
-    const sy = opts.getScrollY();
-    const scaleRatio = previewRatio;
-
-    if (sx) {
-      const midXInView = mid.x - pinchStart.xRect.left;
-      const contentX = pinchStart.xScroll.left + midXInView;
-      sx.scrollLeft = contentX * scaleRatio - midXInView;
-    }
-    if (sy) {
-      const midYInView = mid.y - pinchStart.yRect.top;
-      const contentY = pinchStart.yScroll.top + midYInView;
-      sy.scrollTop = contentY * scaleRatio - midYInView;
+      // When not using preview, scroll to keep content under midpoint stable.
+      const sx = opts.getScrollX();
+      const sy = opts.getScrollY();
+      const scaleRatio = previewRatio;
+      if (sx) {
+        const midXInView = mid.x - pinchStart.xRect.left;
+        const contentX = pinchStart.xScroll.left + midXInView;
+        sx.scrollLeft = contentX * scaleRatio - midXInView;
+      }
+      if (sy) {
+        const midYInView = mid.y - pinchStart.yRect.top;
+        const contentY = pinchStart.yScroll.top + midYInView;
+        sy.scrollTop = contentY * scaleRatio - midYInView;
+      }
     }
   };
 
@@ -310,19 +311,20 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
       const yTop0 = pinchStart.yScroll.top;
       const scaleRatio = finalScale / Math.max(0.0001, baseScale);
 
-      try {
-        opts.clearPinchPreviewScale?.();
-      } catch {
-        /* ignore */
-      }
+      // Apply real scale first so layout updates; then in rAF set scroll and clear CSS preview.
+      // This avoids a frame where preview is cleared but scroll is still wrong (snap-back).
       try {
         opts.setScale(finalScale);
       } catch {
         /* ignore */
       }
-      // After the real scale is applied (pdf.js re-layout), re-align scroll to keep the midpoint stable.
       try {
         requestAnimationFrame(() => {
+          try {
+            opts.clearPinchPreviewScale?.();
+          } catch {
+            /* ignore */
+          }
           const sx = opts.getScrollX();
           const sy = opts.getScrollY();
           if (sx) {

@@ -381,7 +381,7 @@ export default function ReviewPage() {
           <div
             className={
               isFullscreen
-                ? "fixed inset-0 z-50 bg-black overflow-hidden relative"
+                ? "fixed inset-0 z-[9999] bg-black overflow-hidden flex flex-col"
                 : "border rounded-lg bg-white flex-1 min-h-0 p-0 overflow-hidden relative"
             }
           >

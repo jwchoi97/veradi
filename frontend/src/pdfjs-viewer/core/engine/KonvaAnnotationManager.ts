@@ -104,6 +104,11 @@ export class KonvaAnnotationManager {
   // highlight (native text selection) DOM hook
   private highlightSelectionCleanup: (() => void) | null = null;
 
+  // pen-only programmatic selection in highlight mode (no long-press on pad)
+  private penHighlightSelecting = false;
+  private penHighlightAnchor: { node: Node; offset: number } | null = null;
+  private penHighlightPointerId: number | null = null;
+
   // highlight DOM rendering (behind textLayer)
   private highlightDomLayerByPage: Map<number, HTMLDivElement> = new Map();
   private highlightDomById: Map<string, HTMLDivElement> = new Map();
@@ -241,8 +246,13 @@ export class KonvaAnnotationManager {
 
     // Place the stage container at the visible "window" inside the full document container.
     // This avoids huge absolute-positioned elements inflating scroll ranges.
-    this.stageContainerEl.style.left = `${x}px`;
-    this.stageContainerEl.style.top = `${y}px`;
+    // Clamp position to container bounds so the stage never overlaps the toolbar (which is above the container).
+    const containerW = cr.width || 1;
+    const containerH = cr.height || 1;
+    const stageLeft = Math.max(0, Math.min(x, containerW - vw));
+    const stageTop = Math.max(0, Math.min(y, containerH - vh));
+    this.stageContainerEl.style.left = `${stageLeft}px`;
+    this.stageContainerEl.style.top = `${stageTop}px`;
     this.stageContainerEl.style.width = `${vw}px`;
     this.stageContainerEl.style.height = `${vh}px`;
 
@@ -380,6 +390,9 @@ export class KonvaAnnotationManager {
       /* ignore */
     }
     this.highlightSelectionCleanup = null;
+    this.penHighlightSelecting = false;
+    this.penHighlightAnchor = null;
+    this.penHighlightPointerId = null;
     try {
       this.stage?.destroy();
     } catch {
@@ -463,8 +476,7 @@ export class KonvaAnnotationManager {
     }
     this.applyViewportSync();
 
-    // When highlight mode is active, let the browser/pdf.js perform real text selection,
-    // then convert the selection rects into persistent highlights.
+    // When highlight mode is active: mouse/touch use native selection; pen uses programmatic selection (no long-press).
     try {
       this.highlightSelectionCleanup?.();
     } catch {
@@ -478,9 +490,70 @@ export class KonvaAnnotationManager {
       };
       document.addEventListener("mouseup", applyHighlightsIfHighlightMode, { capture: true });
       document.addEventListener("pointerup", applyHighlightsIfHighlightMode, { capture: true });
+
+      const onPenPointerDown = (e: PointerEvent) => {
+        if (this.currentMode !== "highlight" || getPointerKind(e) !== "pen") return;
+        if (!this.container.contains(e.target as Node)) return;
+        const range = this.getRangeAtPoint(e.clientX, e.clientY);
+        if (!range) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.penHighlightAnchor = { node: range.startContainer, offset: range.startOffset };
+        this.penHighlightPointerId = e.pointerId;
+        this.penHighlightSelecting = true;
+        const sel = window.getSelection();
+        if (sel) {
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      };
+      const onPenPointerMove = (e: PointerEvent) => {
+        if (!this.penHighlightSelecting || e.pointerId !== this.penHighlightPointerId) return;
+        if (this.currentMode !== "highlight") return;
+        e.preventDefault();
+        e.stopPropagation();
+        const range = this.getRangeAtPoint(e.clientX, e.clientY);
+        if (!range || !this.penHighlightAnchor) return;
+        try {
+          const r = document.createRange();
+          r.setStart(this.penHighlightAnchor.node, this.penHighlightAnchor.offset);
+          r.setEnd(range.startContainer, range.startOffset);
+          const sel = window.getSelection();
+          if (sel) {
+            sel.removeAllRanges();
+            sel.addRange(r);
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+      const onPenPointerUp = (e: PointerEvent) => {
+        if (!this.penHighlightSelecting || e.pointerId !== this.penHighlightPointerId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.penHighlightSelecting = false;
+        this.penHighlightPointerId = null;
+        this.penHighlightAnchor = null;
+        this.applyHighlightsFromNativeSelection();
+        try {
+          window.getSelection()?.removeAllRanges();
+        } catch {
+          /* ignore */
+        }
+      };
+
+      document.addEventListener("pointerdown", onPenPointerDown, { capture: true });
+      document.addEventListener("pointermove", onPenPointerMove, { capture: true });
+      document.addEventListener("pointerup", onPenPointerUp, { capture: true });
+      document.addEventListener("pointercancel", onPenPointerUp, { capture: true });
+
       this.highlightSelectionCleanup = () => {
         document.removeEventListener("mouseup", applyHighlightsIfHighlightMode as any, true as any);
         document.removeEventListener("pointerup", applyHighlightsIfHighlightMode as any, true as any);
+        document.removeEventListener("pointerdown", onPenPointerDown, true as any);
+        document.removeEventListener("pointermove", onPenPointerMove, true as any);
+        document.removeEventListener("pointerup", onPenPointerUp, true as any);
+        document.removeEventListener("pointercancel", onPenPointerUp, true as any);
       };
     } catch {
       this.highlightSelectionCleanup = null;
@@ -1173,6 +1246,29 @@ export class KonvaAnnotationManager {
       }
     }
     return out;
+  }
+
+  /** Get a collapsed range at (clientX, clientY) for programmatic selection (pen, no long-press). */
+  private getRangeAtPoint(clientX: number, clientY: number): Range | null {
+    try {
+      const doc = document;
+      if (typeof (doc as any).caretRangeFromPoint === "function") {
+        const r = (doc as any).caretRangeFromPoint(clientX, clientY);
+        if (r && r.setStart) return r as Range;
+      }
+      if (typeof doc.caretPositionFromPoint === "function") {
+        const pos = doc.caretPositionFromPoint(clientX, clientY);
+        if (pos && pos.offsetNode) {
+          const range = doc.createRange();
+          range.setStart(pos.offsetNode, pos.offset);
+          range.collapse(true);
+          return range;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
   }
 
   private boxesIntersect(

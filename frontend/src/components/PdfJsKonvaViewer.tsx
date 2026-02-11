@@ -20,7 +20,7 @@ if (typeof window !== "undefined") {
 // deletes/moves that file during iteration, and Vite will hard-fail on missing CSS imports.
 // These styles are injected inline to keep the viewer working even if the CSS file is absent.
 const PDF_JS_KONVA_VIEWER_CSS = `
-.pdf-viewer-toolbar{position:sticky;top:0;left:0;z-index:50;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 10px;background:#111827;color:#f9fafb;border-bottom:1px solid rgba(255,255,255,.08)}
+.pdf-viewer-toolbar{position:sticky;top:0;left:0;z-index:100;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 10px;background:#111827;color:#f9fafb;border-bottom:1px solid rgba(255,255,255,.08);pointer-events:auto;isolation:isolate}
 .pdf-viewer-toolbar .group{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
 .pdf-viewer-toolbar .group.right{justify-content:flex-end}
 .pdf-viewer-toolbar .btn{appearance:none;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:inherit;height:32px;min-width:32px;padding:0 10px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;font-size:13px;line-height:1}
@@ -120,6 +120,7 @@ export default function PdfJsKonvaViewer({
   const pendingApplyPageTimerRef = useRef<number | null>(null);
   const pendingScrollSyncRafRef = useRef<number | null>(null);
   const currentPageRef = useRef<number>(1);
+  const programmaticNavUntilRef = useRef<number>(0);
 
   // tool settings (match previous viewer behavior)
   const [openSettings, setOpenSettings] = useState<null | "ink" | "highlight">(null);
@@ -212,6 +213,7 @@ export default function PdfJsKonvaViewer({
   const pendingSyncRafRef = useRef<number | null>(null);
   const pendingHeavySyncTimerRef = useRef<number | null>(null);
   const pendingHeightRafRef = useRef<number | null>(null);
+  const pendingHeightFromPageTimerRef = useRef<number | null>(null);
   const scheduleUpdateContainerHeightRef = useRef<(() => void) | null>(null);
   const lastScaleChangeAtRef = useRef<number>(0);
 
@@ -386,15 +388,25 @@ export default function PdfJsKonvaViewer({
         return;
       }
 
-      // Ctrl/Meta+wheel => zoom
+      // Ctrl/Meta+wheel => zoom (same as zoom in/out buttons: one step per wheel tick, no CSS preview, no wobble)
       e.preventDefault();
       e.stopPropagation();
       const pdfViewer = pdfViewerRef.current;
       if (!pdfViewer) return;
-      // wheel up: zoom in, wheel down: zoom out (use explicit clamp; don't let pdf.js overshoot then "snap back")
       const cur = Number(pdfViewer.currentScale || 1);
-      const next = e.deltaY < 0 ? cur * 1.1 : cur / 1.1;
-      pdfViewer.currentScale = clampScale(next);
+      const next = e.deltaY < 0 ? clampScale(cur * 1.1) : clampScale(cur / 1.1);
+      if (next === cur) return;
+      try {
+        pdfViewer.currentScale = next;
+        setZoomPct(Math.round(next * 100));
+      } catch {
+        /* ignore */
+      }
+      try {
+        requestAnimationFrame(() => centerCanvasInWrapper());
+      } catch {
+        /* ignore */
+      }
     };
     container.addEventListener("wheel", handleWheel, { passive: false });
 
@@ -553,7 +565,7 @@ export default function PdfJsKonvaViewer({
     eventBus.on("pagesinit", onPagesInit);
     eventBus.on("pagechanging", onPageChange);
     eventBus.on("scalechanging", onScaleChange);
-    const onPageRendered = () => {
+    const onPageRendered = (...args: unknown[]) => {
       if (perfEnabledRef.current && perfRef.current.tFirstPageRendered == null) {
         perfRef.current.tFirstPageRendered = performance.now();
         const t0 = perfRef.current.tLoadStart;
@@ -564,11 +576,29 @@ export default function PdfJsKonvaViewer({
           });
         }
       }
-      // 렌더 이벤트는 매우 자주 발생할 수 있으므로 높이만 빠르게 갱신하고,
-      // 줌 직후에는 scalechanging에서 디바운스로 처리한다.
-      scheduleHeight();
+      const details = (args.length >= 2 ? args[1] : args[0]) as { pageNumber?: number } | undefined;
+      const pageNumber = typeof details?.pageNumber === "number" ? details.pageNumber : (args[0] as { pageNumber?: number })?.pageNumber;
+      const currentPage = currentPageRef.current;
+
+      // Debounce height updates so background page loads don't cause a reflow on every single page.
+      if (pendingHeightFromPageTimerRef.current != null) {
+        window.clearTimeout(pendingHeightFromPageTimerRef.current);
+      }
+      pendingHeightFromPageTimerRef.current = window.setTimeout(() => {
+        pendingHeightFromPageTimerRef.current = null;
+        scheduleHeight();
+      }, 80);
+
+      // Only run heavy sync (Konva layout, centerCanvas) when the rendered page is near the current view.
+      // Otherwise distant page loads cause the visible page to flicker.
       if (performance.now() - lastScaleChangeAtRef.current > 250) {
-        scheduleHeavySync(0);
+        const nearCurrent =
+          typeof pageNumber === "number" &&
+          Number.isFinite(currentPage) &&
+          Math.abs(pageNumber - currentPage) <= 2;
+        if (nearCurrent) {
+          scheduleHeavySync(0);
+        }
       }
     };
     eventBus.on("pagerendered", onPageRendered);
@@ -586,6 +616,10 @@ export default function PdfJsKonvaViewer({
       if (pendingHeightRafRef.current !== null) {
         window.cancelAnimationFrame(pendingHeightRafRef.current);
         pendingHeightRafRef.current = null;
+      }
+      if (pendingHeightFromPageTimerRef.current != null) {
+        window.clearTimeout(pendingHeightFromPageTimerRef.current);
+        pendingHeightFromPageTimerRef.current = null;
       }
       if (pendingSyncRafRef.current !== null) {
         window.cancelAnimationFrame(pendingSyncRafRef.current);
@@ -617,7 +651,7 @@ export default function PdfJsKonvaViewer({
       pdfViewerRef.current = null;
       setViewerReady(false);
     };
-  }, [eventBus, linkService, clampScale, centerCanvasInWrapper, getScrollParentX]);
+  }, [eventBus, linkService, clampScale, centerCanvasInWrapper, getScrollParentX, getScrollParentY, setPinchPreviewScale, clearPinchPreviewScale]);
 
   // PDF 로드 (PDFViewer 초기화 완료 후)
   useEffect(() => {
@@ -766,6 +800,7 @@ export default function PdfJsKonvaViewer({
   useEffect(() => {
     if (!viewerReady) return;
     const computeVisiblePage = () => {
+      if (performance.now() < programmaticNavUntilRef.current) return;
       const pv = pdfViewerRef.current;
       const root = viewerRef.current;
       if (!pv || !root) return;
@@ -886,7 +921,10 @@ export default function PdfJsKonvaViewer({
       if (!Number.isFinite(n)) return;
       const pageNum = Math.max(1, Math.min(pdfDocRef.current.numPages, Math.trunc(n) || 1));
       pdfViewerRef.current.currentPageNumber = pageNum;
+      currentPageRef.current = pageNum;
+      programmaticNavUntilRef.current = performance.now() + 300;
       setCurrentPage(pageNum);
+      setPageInput(String(pageNum));
       // In this viewer, vertical scrolling is delegated to the OUTER scroll container.
       // So, manually align the selected page's top to the visible top.
       try {
@@ -1085,6 +1123,24 @@ export default function PdfJsKonvaViewer({
     [applyPageNumber]
   );
 
+  const handlePrevPage = useCallback(() => {
+    const pv = pdfViewerRef.current;
+    if (!pv) return;
+    const cur = pv.currentPageNumber || 1;
+    if (cur <= 1) return;
+    applyPageNumber(String(cur - 1));
+  }, [applyPageNumber]);
+
+  const handleNextPage = useCallback(() => {
+    const pv = pdfViewerRef.current;
+    const doc = pdfDocRef.current;
+    if (!pv || !doc) return;
+    const cur = pv.currentPageNumber || 1;
+    const total = doc.numPages || 1;
+    if (cur >= total) return;
+    applyPageNumber(String(cur + 1));
+  }, [applyPageNumber]);
+
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
@@ -1129,6 +1185,19 @@ export default function PdfJsKonvaViewer({
         return;
       }
 
+      // Page Down: 다음 장 (숫자 옆 다음 버튼과 동일)
+      if (e.key === "PageDown") {
+        e.preventDefault();
+        handleNextPage();
+        return;
+      }
+      // Page Up: 이전 장 (숫자 옆 이전 버튼과 동일)
+      if (e.key === "PageUp") {
+        e.preventDefault();
+        handlePrevPage();
+        return;
+      }
+
       // Undo/Redo (TODO: KonvaAnnotationManager 통합 후)
       if (isMod && (e.key === "z" || e.key === "Z") && !e.shiftKey) {
         e.preventDefault();
@@ -1169,7 +1238,7 @@ export default function PdfJsKonvaViewer({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [viewerReady, fullscreen, onFullscreenChange, currentMode]);
+  }, [viewerReady, fullscreen, onFullscreenChange, currentMode, handlePrevPage, handleNextPage]);
 
   // settings panel 위치 계산 + 바깥 클릭 시 닫기
   useEffect(() => {
@@ -1340,6 +1409,29 @@ export default function PdfJsKonvaViewer({
             onKeyDown={handlePageNumberKeyDown}
             inputMode="numeric"
           />
+          <div className="spinbox" role="group" aria-label="페이지 이전/다음">
+            <button
+              type="button"
+              className="spinbtn"
+              onClick={handlePrevPage}
+              disabled={!(currentPage > 1)}
+              title="이전 페이지 (Page Up)"
+              aria-label="이전 페이지"
+            >
+              ▲
+            </button>
+            <div className="spinsep" aria-hidden="true" />
+            <button
+              type="button"
+              className="spinbtn"
+              onClick={handleNextPage}
+              disabled={!totalPages || currentPage >= totalPages}
+              title="다음 페이지 (Page Down)"
+              aria-label="다음 페이지"
+            >
+              ▼
+            </button>
+          </div>
           <span className="hint">/ {totalPages || "?"}</span>
           <span className="sep"></span>
           <button className="btn" title="확대율" style={{ minWidth: "64px", justifyContent: "center" }}>
