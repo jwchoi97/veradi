@@ -325,9 +325,28 @@ class ForgotPasswordVerifyRequest(BaseModel):
 
 
 class ForgotPasswordResetRequest(BaseModel):
-    """본인 확인 후 새 비밀번호로 재설정"""
+    """본인 확인 후 새 비밀번호 변경 요청 (관리자 승인 대기)"""
     username: str = Field(min_length=1, max_length=64)
     phone_number: str = Field(min_length=8, max_length=32)
     new_password: str = Field(min_length=8, max_length=128)
     new_password_confirm: str = Field(min_length=8, max_length=128)
+
+
+# -------- 비밀번호 변경 요청 (승인 대기) --------
+class PasswordChangeRequestOut(BaseModel):
+    """관리자 승인 대기 중인 비밀번호 변경 요청"""
+    id: int
+    user_id: int
+    username: str
+    name: Optional[str] = None
+    phone_number: str
+    requested_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PasswordChangeRequestListOut(BaseModel):
+    total: int
+    items: List[PasswordChangeRequestOut]
 

@@ -4,6 +4,7 @@ import { UploadCloud, FileText, FolderKanban, Users, User, Home, CheckCircle } f
 import TopBar from "./TopBar";
 import { ROUTE_MODULES } from "@/router/routes";
 import { getAuthedUser } from "@/auth";
+import { usePendingCount } from "@/hooks/usePendingCount";
 
 type NavState = { isActive: boolean; isPending: boolean; isTransitioning?: boolean };
 
@@ -40,6 +41,7 @@ export default function AppLayout() {
   }, [sidebarOpen]);
 
   const canSeeAdmin = canSeeAdminModule(me?.role ?? null);
+  const { totalPendingCount } = usePendingCount();
   const isAdminPage = location.pathname.startsWith("/erp/admin");
   const isUploadPage = location.pathname.startsWith("/erp/content");
 
@@ -162,6 +164,9 @@ export default function AppLayout() {
                     <Users className="h-4 w-4" />
                   </span>
                   유저 관리
+                  {totalPendingCount > 0 && (
+                    <span className="side-link-badge">{totalPendingCount}</span>
+                  )}
                 </NavLink>
               </>
             )}

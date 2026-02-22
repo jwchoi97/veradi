@@ -29,7 +29,7 @@ export default function LoginPage() {
 
   const from = (loc.state as any)?.from ?? "/home";
   const signupSuccess = Boolean((loc.state as any)?.signupSuccess);
-  const resetSuccess = Boolean((loc.state as any)?.resetSuccess);
+  const resetRequested = Boolean((loc.state as any)?.resetRequested);
   const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -91,9 +91,9 @@ export default function LoginPage() {
               가입 요청이 접수되었습니다. 관리자 승인 후 로그인할 수 있어요.
             </div>
           )}
-          {resetSuccess && (
+          {resetRequested && (
             <div className="mt-4 rounded-2xl border border-emerald-200/60 bg-emerald-50/70 px-4 py-3 text-sm text-emerald-900">
-              비밀번호가 변경되었습니다. 새 비밀번호로 로그인하세요.
+              비밀번호 변경 요청이 접수되었습니다. 관리자 승인 후 새 비밀번호로 로그인할 수 있어요.
             </div>
           )}
 

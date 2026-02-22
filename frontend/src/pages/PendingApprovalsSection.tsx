@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   approvePendingUser,
   fetchPendingUsers,
@@ -7,6 +8,7 @@ import {
   type PendingUser,
 } from "@/data/files/adminUsersApi";
 import { getAuthedUser } from "@/auth";
+import { PENDING_COUNT_QUERY_KEY } from "@/hooks/usePendingCount";
 import { prettyDepartment, isDepartment, type Department } from "@/data/departments";
 
 function uniqStr(list: string[]): string[] {
@@ -53,6 +55,7 @@ type PendingApprovalsSectionProps = {
 
 export default function PendingApprovalsSection({ embedded }: PendingApprovalsSectionProps) {
   const me = getAuthedUser();
+  const queryClient = useQueryClient();
 
   const adminId = me?.id ?? null;
   const isAdmin = me?.role === "ADMIN";
@@ -96,6 +99,7 @@ export default function PendingApprovalsSection({ embedded }: PendingApprovalsSe
       // ✅ 승인에서는 role만
       await approvePendingUser(adminId, userId, role);
       setItems((prev) => prev.filter((x) => x.id !== userId));
+      await queryClient.invalidateQueries({ queryKey: PENDING_COUNT_QUERY_KEY });
     } catch (e: any) {
       setErr(e?.message ?? "Approve failed");
     }
@@ -107,6 +111,7 @@ export default function PendingApprovalsSection({ embedded }: PendingApprovalsSe
     try {
       await rejectPendingUser(adminId, userId);
       setItems((prev) => prev.filter((x) => x.id !== userId));
+      await queryClient.invalidateQueries({ queryKey: PENDING_COUNT_QUERY_KEY });
     } catch (e: any) {
       setErr(e?.message ?? "Reject failed");
     }

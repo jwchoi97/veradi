@@ -802,13 +802,14 @@ def list_content_files_for_review(
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
-    """검토 가능한 콘텐츠 파일 목록을 조회합니다."""
+    """검토 가능한 콘텐츠 파일 목록을 조회합니다. PDF 파일만 검토 대상입니다."""
     user = get_current_user(db, x_user_id)
 
-    # 콘텐츠 파일만 조회 (문제지, 해설지, 정오표)
+    # 콘텐츠 파일만 조회 (문제지, 해설지, 정오표), PDF 확장자만 포함 (HWP 제외)
     query = (
         db.query(FileAsset)
         .filter(FileAsset.file_type.in_(["문제지", "해설지", "정오표"]))
+        .filter(FileAsset.original_name.ilike("%.pdf"))
     )
 
     if project_id:

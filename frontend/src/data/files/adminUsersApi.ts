@@ -46,6 +46,16 @@ export type PendingUserListResponse = {
 
 export type ApproveRole = "LEAD" | "MEMBER";
 
+// -------- 비밀번호 변경 요청 (승인 대기) --------
+export type PendingPasswordChangeRequest = {
+  id: number;
+  user_id: number;
+  username: string;
+  name: string | null;
+  phone_number: string;
+  requested_at: string;
+};
+
 function getBaseUrl(): string {
   const baseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
   if (!baseUrl) throw new Error("VITE_API_BASE_URL is not set");
@@ -79,6 +89,66 @@ export async function fetchPendingUsers(adminUserId: number): Promise<PendingUse
   // ✅ tolerate legacy response shapes
   if (Array.isArray(data)) return data;
   return data.items ?? [];
+}
+
+export type PendingCounts = { signupCount: number; passwordCount: number };
+
+/** Admin: 가입 요청 / 비밀번호 변경 요청 건수 (각각 배지 표시용) */
+export async function fetchPendingCounts(adminUserId: number): Promise<PendingCounts> {
+  const [signupItems, pwItems] = await Promise.all([
+    fetchPendingUsers(adminUserId),
+    fetchPendingPasswordChanges(adminUserId),
+  ]);
+  return { signupCount: signupItems.length, passwordCount: pwItems.length };
+}
+
+/** @deprecated use fetchPendingCounts */
+export async function fetchPendingCount(adminUserId: number): Promise<number> {
+  const { signupCount, passwordCount } = await fetchPendingCounts(adminUserId);
+  return signupCount + passwordCount;
+}
+
+/** Admin: 비밀번호 변경 요청 목록 */
+export async function fetchPendingPasswordChanges(
+  adminUserId: number
+): Promise<PendingPasswordChangeRequest[]> {
+  const res = await fetch(`${getBaseUrl()}/auth/pending-password-changes`, {
+    method: "GET",
+    headers: { "X-User-Id": String(adminUserId) },
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res));
+  const data = (await res.json()) as { total?: number; items?: PendingPasswordChangeRequest[] };
+  return Array.isArray(data) ? data : (data.items ?? []);
+}
+
+/** Admin: 비밀번호 변경 요청 승인 */
+export async function approvePendingPasswordChange(
+  adminUserId: number,
+  requestId: number
+): Promise<void> {
+  const res = await fetch(
+    `${getBaseUrl()}/auth/pending-password-changes/${requestId}/approve`,
+    {
+      method: "POST",
+      headers: { "X-User-Id": String(adminUserId) },
+    }
+  );
+  if (!res.ok) throw new Error(await readErrorMessage(res));
+}
+
+/** Admin: 비밀번호 변경 요청 거절 */
+export async function rejectPendingPasswordChange(
+  adminUserId: number,
+  requestId: number
+): Promise<void> {
+  const res = await fetch(
+    `${getBaseUrl()}/auth/pending-password-changes/${requestId}/reject`,
+    {
+      method: "POST",
+      headers: { "X-User-Id": String(adminUserId) },
+    }
+  );
+  if (!res.ok) throw new Error(await readErrorMessage(res));
 }
 
 /** Admin: 전체 유저 목록 (필터: 소속 팀, 역할) */

@@ -315,6 +315,39 @@ class SignupRequest(Base):
     approved_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     approved_by = relationship("User", foreign_keys=[approved_by_user_id])
 
+# --------------------
+# Password Change Request (pending approval)
+# --------------------
+
+class PasswordChangeRequest(Base):
+    """비밀번호 변경 요청: 본인 확인 후 요청 → 관리자 승인 시 적용"""
+    __tablename__ = "password_change_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    new_password_hash = Column(String(255), nullable=False)
+
+    status = Column(String(20), nullable=False, default="pending", index=True)  # pending, approved, rejected
+
+    requested_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    approved_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+    approved_by = relationship("User", foreign_keys=[approved_by_user_id])
+
+
 # --- NEW: link table for multi departments ---
 class UserDepartment(Base):
     __tablename__ = "user_departments"

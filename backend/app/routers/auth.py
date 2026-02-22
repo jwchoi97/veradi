@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File
 from sqlalchemy.orm import Session
 
 from ..mariadb.database import SessionLocal
-from ..mariadb.models import User, UserRole, Department, UserDepartment
+from ..mariadb.models import User, UserRole, Department, UserDepartment, PasswordChangeRequest
 from ..schemas import (
     SignupRequest,
     UserOut,
@@ -23,6 +23,8 @@ from ..schemas import (
     AdminUserUpdateRequest,
     ForgotPasswordVerifyRequest,
     ForgotPasswordResetRequest,
+    PasswordChangeRequestOut,
+    PasswordChangeRequestListOut,
 )
 from ..mariadb.models import FileAsset, Project, Activity
 from sqlalchemy import func, extract
@@ -201,7 +203,7 @@ def forgot_password_verify(payload: ForgotPasswordVerifyRequest, db: Session = D
 
 @router.post("/forgot-password/reset")
 def forgot_password_reset(payload: ForgotPasswordResetRequest, db: Session = Depends(get_db)):
-    """아이디·전화번호 확인 후 새 비밀번호로 변경."""
+    """아이디·전화번호 확인 후 비밀번호 변경 요청 생성. 관리자 승인 시 적용됩니다."""
     if payload.new_password != payload.new_password_confirm:
         raise HTTPException(status_code=400, detail="PASSWORD_MISMATCH")
     user = db.query(User).filter(User.username == payload.username).first()
@@ -210,10 +212,15 @@ def forgot_password_reset(payload: ForgotPasswordResetRequest, db: Session = Dep
         raise HTTPException(status_code=400, detail="INVALID_PHONE_NUMBER")
     if not user or user.phone_number != phone_digits:
         raise HTTPException(status_code=400, detail="아이디와 등록된 전화번호가 일치하지 않습니다.")
-    user.password_hash = hash_password(payload.new_password)
-    db.add(user)
+    new_hash = hash_password(payload.new_password)
+    req = PasswordChangeRequest(
+        user_id=user.id,
+        new_password_hash=new_hash,
+        status="pending",
+    )
+    db.add(req)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "message": "비밀번호 변경 요청이 접수되었습니다. 관리자 승인 후 새 비밀번호가 적용됩니다."}
 
 
 @router.post("/signup", response_model=UserOut, status_code=201)
@@ -270,6 +277,89 @@ def list_pending(db: Session = Depends(get_db), x_user_id: str | None = Header(d
         total=len(items),
         items=[_pending_out(u) for u in items],
     )
+
+
+# -------- 비밀번호 변경 요청 (승인 대기) --------
+
+def _password_change_request_out(req: PasswordChangeRequest, user: User) -> PasswordChangeRequestOut:
+    return PasswordChangeRequestOut(
+        id=req.id,
+        user_id=req.user_id,
+        username=user.username,
+        name=user.name,
+        phone_number=user.phone_number or "",
+        requested_at=req.requested_at,
+    )
+
+
+@router.get("/pending-password-changes", response_model=PasswordChangeRequestListOut)
+def list_pending_password_changes(
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """Admin only. List pending password change requests."""
+    require_admin(db, x_user_id)
+    items = (
+        db.query(PasswordChangeRequest)
+        .filter(PasswordChangeRequest.status == "pending")
+        .order_by(PasswordChangeRequest.id.desc())
+        .all()
+    )
+    out = []
+    for req in items:
+        user = db.query(User).filter(User.id == req.user_id).first()
+        if user:
+            out.append(_password_change_request_out(req, user))
+    return PasswordChangeRequestListOut(total=len(out), items=out)
+
+
+@router.post("/pending-password-changes/{request_id}/approve", status_code=200)
+def approve_pending_password_change(
+    request_id: int,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """Admin only. Apply the new password and mark request as approved."""
+    require_admin(db, x_user_id)
+    req = db.query(PasswordChangeRequest).filter(
+        PasswordChangeRequest.id == request_id,
+        PasswordChangeRequest.status == "pending",
+    ).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Pending password change request not found")
+    user = db.query(User).filter(User.id == req.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.password_hash = req.new_password_hash
+    db.add(user)
+    req.status = "approved"
+    req.approved_by_user_id = int(x_user_id)
+    req.approved_at = datetime.now(timezone.utc)
+    db.add(req)
+    db.commit()
+    return {"ok": True, "message": "비밀번호가 변경되었습니다."}
+
+
+@router.post("/pending-password-changes/{request_id}/reject", status_code=200)
+def reject_pending_password_change(
+    request_id: int,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """Admin only. Reject the password change request."""
+    require_admin(db, x_user_id)
+    req = db.query(PasswordChangeRequest).filter(
+        PasswordChangeRequest.id == request_id,
+        PasswordChangeRequest.status == "pending",
+    ).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Pending password change request not found")
+    req.status = "rejected"
+    req.approved_by_user_id = int(x_user_id)
+    req.approved_at = datetime.now(timezone.utc)
+    db.add(req)
+    db.commit()
+    return {"ok": True, "message": "비밀번호 변경 요청을 거절했습니다."}
 
 
 @router.get("/users", response_model=List[UserOut])

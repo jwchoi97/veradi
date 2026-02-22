@@ -4,7 +4,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import { EventBus, PDFLinkService, PDFViewer } from "pdfjs-dist/web/pdf_viewer.mjs";
 import "pdfjs-dist/web/pdf_viewer.css";
 import Konva from "konva";
-import { Mail } from "lucide-react";
+import { Mail, Maximize2, Minimize2, Save, PlayCircle, Square, Loader2, XCircle, CheckCircle } from "lucide-react";
 import { getAuthedUser } from "@/auth";
 import { KonvaAnnotationManager } from "@/pdfjs-viewer/main";
 import { attachTouchGestures } from "@/pdfjs-viewer/core/input/touchGestures";
@@ -60,6 +60,107 @@ const PDF_JS_KONVA_VIEWER_CSS = `
 // KonvaAnnotationManager와 관련 타입들을 main.ts에서 가져와야 하지만,
 // 일단 간단한 버전으로 시작하고 점진적으로 확장
 
+/** API 응답 대기 중 툴바 + PDF 로딩 화면만 즉시 표시 (백엔드 통신 없이 배포 사이트에서 바로 보임) */
+export type PdfJsKonvaViewerLoadingShellProps = {
+  reviewStatus?: string | null;
+  fullscreen?: boolean;
+  onFullscreenChange?: (enabled: boolean) => void;
+  onStartReview?: () => void;
+  onStopReview?: () => void;
+  onRequestRevision?: () => void;
+  onApprove?: () => void;
+  commentsOpen?: boolean;
+  onToggleComments?: () => void;
+};
+
+export function PdfJsKonvaViewerLoadingShell({
+  reviewStatus = null,
+  fullscreen = false,
+  onFullscreenChange,
+  onStartReview,
+  onStopReview,
+  onRequestRevision,
+  onApprove,
+  commentsOpen = false,
+  onToggleComments,
+}: PdfJsKonvaViewerLoadingShellProps) {
+  return (
+    <div className="w-full bg-gray-50 relative flex flex-col" style={{ minHeight: "100%" }}>
+      <style>{PDF_JS_KONVA_VIEWER_CSS}</style>
+      <div className="pdf-viewer-toolbar">
+        <div className="group">
+          <button className="btn active" disabled title="선택/이동">🖐</button>
+          <button className="btn" disabled title="펜">✎</button>
+          <button className="btn" disabled title="형광펜">🖍</button>
+          <button className="btn" disabled title="텍스트">T</button>
+          <button className="btn" disabled title="지우개">⌫</button>
+          <button className="btn" disabled>↶</button>
+          <button className="btn" disabled>↷</button>
+          <span className="sep" />
+          <span className="hint opacity-70">—</span>
+          <span className="sep" />
+          <button className="btn" disabled>100%</button>
+        </div>
+        <div className="group right">
+          {reviewStatus === "pending" && onStartReview && (
+            <button className="btn" onClick={onStartReview} title="검토 시작">
+              <PlayCircle className="h-4 w-4" />
+            </button>
+          )}
+          {reviewStatus === "in_progress" && (
+            <div className="btnbox" role="group">
+              <button type="button" className="segbtn" onClick={onStopReview} title="검토 중지">
+                <Square className="h-4 w-4" />
+              </button>
+              {onRequestRevision && (
+                <>
+                  <span className="segdiv" />
+                  <button type="button" className="segbtn" onClick={onRequestRevision} title="수정 요청">
+                    <XCircle className="h-4 w-4" />
+                  </button>
+                </>
+              )}
+              {onApprove && (
+                <>
+                  <span className="segdiv" />
+                  <button type="button" className="segbtn" onClick={onApprove} title="검토 완료">
+                    <CheckCircle className="h-4 w-4" />
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+          {fullscreen ? (
+            <button className="btn" onClick={() => onFullscreenChange?.(false)} title="전체화면 닫기">
+              <Minimize2 className="h-4 w-4" />
+            </button>
+          ) : (
+            <button className="btn" onClick={() => onFullscreenChange?.(true)} title="전체화면">
+              <Maximize2 className="h-4 w-4" />
+            </button>
+          )}
+          <button className="btn" disabled title="저장">
+            <Loader2 className="h-4 w-4 animate-spin" />
+          </button>
+          {onToggleComments && (
+            <button
+              type="button"
+              className={`btn ${commentsOpen ? "active" : ""}`}
+              onClick={onToggleComments}
+              title="코멘트"
+            >
+              <Mail className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="pdf-viewer-main flex-1 flex items-center justify-center">
+        <span className="text-gray-500">PDF 로딩 중...</span>
+      </div>
+    </div>
+  );
+}
+
 export type PdfJsKonvaViewerProps = {
   fileUrl: string;
   fileId: number;
@@ -69,6 +170,8 @@ export type PdfJsKonvaViewerProps = {
   onFullscreenChange?: (enabled: boolean) => void;
   onStartReview?: () => void;
   onStopReview?: () => void;
+  onRequestRevision?: () => void;
+  onApprove?: () => void;
   commentsOpen?: boolean;
   onToggleComments?: () => void;
 };
@@ -82,6 +185,8 @@ export default function PdfJsKonvaViewer({
   onFullscreenChange,
   onStartReview,
   onStopReview,
+  onRequestRevision,
+  onApprove,
   commentsOpen = false,
   onToggleComments,
 }: PdfJsKonvaViewerProps) {
@@ -1059,50 +1164,6 @@ export default function PdfJsKonvaViewer({
     try { requestAnimationFrame(() => centerCanvasInWrapper()); } catch { /* ignore */ }
   }, [clampScale, centerCanvasInWrapper]);
 
-  const handleFitWidth = useCallback(() => {
-    if (!pdfViewerRef.current) return;
-    pdfViewerRef.current.currentScaleValue = "page-width";
-    const clamped = clampScale(pdfViewerRef.current.currentScale || 1);
-    if (clamped !== pdfViewerRef.current.currentScale) {
-      pdfViewerRef.current.currentScale = clamped;
-    }
-    // reset user horizontal scroll preference on fit-to-width
-    userScrolledHorizRef.current = false;
-    try { requestAnimationFrame(() => centerCanvasInWrapper({ force: true })); } catch { /* ignore */ }
-  }, [clampScale, centerCanvasInWrapper]);
-
-  const handleFitHeight = useCallback(() => {
-    if (!pdfViewerRef.current || !containerRef.current) return;
-    try {
-      const pv = pdfViewerRef.current.getPageView?.((pdfViewerRef.current.currentPageNumber || 1) - 1);
-      const vp = pv?.viewport;
-      if (!vp || !vp.height) {
-        pdfViewerRef.current.currentScaleValue = "page-height";
-        return;
-      }
-      const cs = window.getComputedStyle(containerRef.current);
-      const padTop = Number.parseFloat(cs.paddingTop || "0") || 0;
-      const padBottom = Number.parseFloat(cs.paddingBottom || "0") || 0;
-      const availH = Math.max(50, containerRef.current.clientHeight - padTop - padBottom);
-      const curScale = Number(pdfViewerRef.current.currentScale || 1);
-      const factor = availH / Number(vp.height);
-      const nextScale = curScale * factor;
-      if (Number.isFinite(nextScale) && nextScale > 0) {
-        pdfViewerRef.current.currentScale = nextScale;
-      } else {
-        pdfViewerRef.current.currentScaleValue = "page-height";
-      }
-      const clamped = clampScale(pdfViewerRef.current.currentScale || 1);
-      if (clamped !== pdfViewerRef.current.currentScale) {
-        pdfViewerRef.current.currentScale = clamped;
-      }
-    } catch {
-      pdfViewerRef.current.currentScaleValue = "page-height";
-    }
-    userScrolledHorizRef.current = false;
-    try { requestAnimationFrame(() => centerCanvasInWrapper({ force: true })); } catch { /* ignore */ }
-  }, [clampScale, centerCanvasInWrapper]);
-
   const handlePageNumberKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key !== "Enter") return;
@@ -1446,76 +1507,93 @@ export default function PdfJsKonvaViewer({
               ▼
             </button>
           </div>
-          <div className="btnbox" role="group" aria-label="맞춤">
-            <button
-              type="button"
-              className={`segbtn`}
-              onClick={handleFitWidth}
-              title="너비 맞춤"
-            >
-              너비
-            </button>
-            <span className="segdiv" aria-hidden="true" />
-            <button
-              type="button"
-              className={`segbtn`}
-              onClick={handleFitHeight}
-              title="높이 맞춤"
-            >
-              높이
-            </button>
-          </div>
         </div>
         <div className="group right">
+          {reviewStatus === "pending" && (
+            <button
+              className="btn"
+              onClick={onStartReview}
+              title="검토 시작"
+              aria-label="검토 시작"
+            >
+              <PlayCircle className="h-4 w-4" />
+            </button>
+          )}
+          {reviewStatus === "in_progress" && (
+            <div className="btnbox" role="group" aria-label="검토 상태">
+              <button
+                type="button"
+                className="segbtn"
+                onClick={onStopReview}
+                title="검토 중지"
+                aria-label="검토 중지"
+              >
+                <Square className="h-4 w-4" />
+              </button>
+              {typeof onRequestRevision === "function" && (
+                <>
+                  <span className="segdiv" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="segbtn"
+                    onClick={onRequestRevision}
+                    title="수정 요청"
+                    aria-label="수정 요청"
+                  >
+                    <XCircle className="h-4 w-4" />
+                  </button>
+                </>
+              )}
+              {typeof onApprove === "function" && (
+                <>
+                  <span className="segdiv" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="segbtn"
+                    onClick={onApprove}
+                    title="검토 완료"
+                    aria-label="검토 완료"
+                  >
+                    <CheckCircle className="h-4 w-4" />
+                  </button>
+                </>
+              )}
+            </div>
+          )}
           {fullscreen ? (
             <button
               className="btn"
               onClick={() => onFullscreenChange?.(false)}
-              title="닫기(Q)"
+              title="전체화면 닫기 (Q)"
+              aria-label="전체화면 닫기"
             >
-              닫기
+              <Minimize2 className="h-4 w-4" />
             </button>
           ) : (
             <button
               className="btn"
               onClick={() => onFullscreenChange?.(true)}
               title="전체화면"
+              aria-label="전체화면"
             >
-              전체화면
-            </button>
-          )}
-          {reviewStatus === "pending" && (
-            <button
-              className="btn"
-              onClick={onStartReview}
-              title="검토 시작"
-            >
-              검토 시작
-            </button>
-          )}
-          {reviewStatus === "in_progress" && (
-            <button
-              className="btn"
-              onClick={onStopReview}
-              title="검토 중지"
-            >
-              검토 중지
+              <Maximize2 className="h-4 w-4" />
             </button>
           )}
           <button
             className="btn"
             onClick={handleSave}
             disabled={saving}
-            title="서버에 저장"
+            title={saving ? "저장 중..." : "서버에 저장"}
+            aria-label="저장"
           >
-            {saving ? "저장 중..." : "저장"}
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
           </button>
           {typeof onToggleComments === "function" && (
             <button
               type="button"
               className={`btn ${commentsOpen ? "active" : ""}`}
               onClick={onToggleComments}
-              title="코멘트"
+              title="코멘트 보기/숨기기"
               aria-label="코멘트"
             >
               <Mail className="h-4 w-4" />

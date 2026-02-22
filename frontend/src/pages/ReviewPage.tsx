@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { CheckCircle, XCircle, AlertCircle, MessageSquare, FileText, Loader2 } from "lucide-react";
+import React, { useState, useEffect, useMemo } from "react";
+import { CheckCircle, XCircle, AlertCircle, MessageSquare, FileText, Loader2, ChevronRight, ChevronLeft, FolderOpen } from "lucide-react";
 import {
   listContentFilesForReview,
   getFileReview,
@@ -19,7 +19,7 @@ import {
   type FileAsset,
 } from "@/data/files/api";
 import { getAuthedUser } from "@/auth";
-import PdfJsKonvaViewer from "@/components/PdfJsKonvaViewer";
+import PdfJsKonvaViewer, { PdfJsKonvaViewerLoadingShell } from "@/components/PdfJsKonvaViewer";
 
 export default function ReviewPage() {
   const me = getAuthedUser();
@@ -44,6 +44,8 @@ export default function ReviewPage() {
   const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
   const [editingCommentText, setEditingCommentText] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  /** 프로젝트 선택: null=프로젝트 목록, -1=미분류, number=프로젝트 ID */
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false);
 
@@ -87,6 +89,7 @@ export default function ReviewPage() {
       // 상세 정보 조회 (코멘트 포함)
       const fullReview = await getFileReview(fileAssetId);
       setSelectedReview(fullReview);
+      setSelectedProjectId(fullReview.project_id ?? -1);
 
       // 프로젝트 파일 목록에서 원본 이름 찾기
       if (typeof fullReview.project_id === "number") {
@@ -281,10 +284,54 @@ export default function ReviewPage() {
   };
 
   // 필터링된 리뷰 목록
-  const filteredReviews = reviews.filter((r) => {
-    if (statusFilter === "all") return true;
-    return r.status === statusFilter;
-  });
+  const filteredReviews = useMemo(() => {
+    return reviews.filter((r) => {
+      if (statusFilter === "all") return true;
+      return r.status === statusFilter;
+    });
+  }, [reviews, statusFilter]);
+
+  // 프로젝트별로 그룹화 (project_id 기준)
+  type ProjectGroup = { projectId: number | null; projectName: string; projectYear: string | null; reviews: Review[] };
+  const projectGroups = useMemo<ProjectGroup[]>(() => {
+    const byProject = new Map<number | null, Review[]>();
+    for (const r of filteredReviews) {
+      const pid = r.project_id ?? null;
+      const arr = byProject.get(pid) ?? [];
+      arr.push(r);
+      byProject.set(pid, arr);
+    }
+    const groups = Array.from(byProject.entries()).map(([projectId, reviews]) => {
+      const first = reviews[0];
+      return {
+        projectId,
+        projectName: first?.project_name ?? "미분류",
+        projectYear: first?.project_year ?? null,
+        reviews,
+      };
+    });
+    return groups.sort((a, b) => {
+      if (a.projectName === "미분류") return 1;
+      if (b.projectName === "미분류") return -1;
+      return (a.projectName ?? "").localeCompare(b.projectName ?? "");
+    });
+  }, [filteredReviews]);
+
+  // 선택된 프로젝트의 파일 목록 (-1=미분류)
+  const filesInSelectedProject = useMemo(() => {
+    if (selectedProjectId == null) return [];
+    const g = projectGroups.find((g) =>
+      selectedProjectId === -1 ? g.projectId === null : g.projectId === selectedProjectId
+    );
+    return g?.reviews ?? [];
+  }, [projectGroups, selectedProjectId]);
+
+  const selectedProjectInfo = useMemo(() => {
+    if (selectedProjectId == null) return null;
+    return projectGroups.find((g) =>
+      selectedProjectId === -1 ? g.projectId === null : g.projectId === selectedProjectId
+    );
+  }, [projectGroups, selectedProjectId]);
 
   return (
     // TopBar(56px) 아래를 꽉 채우고, AppLayout의 main padding(20px)을 상쇄
@@ -315,81 +362,89 @@ export default function ReviewPage() {
             </div>
           ) : filteredReviews.length === 0 ? (
             <div className="text-sm text-gray-500 text-center py-8">검토할 파일이 없습니다.</div>
-          ) : (
-            <div className="space-y-2 flex-1 min-h-0 overflow-y-auto pr-1">
-              {filteredReviews.map((review) => (
-                <div
-                  key={review.id}
-                  onClick={() => handleSelectReview(review)}
-                  className={`p-3 rounded-lg border cursor-pointer transition ${
-                    selectedReview?.id === review.id
-                      ? "border-indigo-500 bg-indigo-50"
-                      : "border-gray-200 hover:border-gray-300"
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    {getStatusIcon(review.status)}
-                    <span className="text-xs font-semibold">{getStatusLabel(review.status)}</span>
-                  </div>
-                  <div className="text-sm font-medium text-gray-900 truncate">
-                    {review.file_name || `파일 ID: ${review.file_asset_id}`}
-                  </div>
-                  {review.project_name && (
-                    <div className="text-xs text-gray-600">
-                      {review.project_name}
-                      {review.project_year && ` (${review.project_year})`}
-                    </div>
-                  )}
-                  {review.reviewer_name && (
-                    <div className="text-xs text-gray-500">검토자: {review.reviewer_name}</div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* 선택된 파일의 코멘트/검토 완료 UI를 좌측에 합침 */}
-          {selectedReview && (
-            <div className="mt-3 border rounded-lg bg-white p-3">
-              <div className="text-sm font-semibold text-gray-900 truncate">
-                {selectedFileAsset?.original_name || selectedReview.file_name || `파일 ID: ${selectedReview.file_asset_id}`}
+          ) : selectedProjectId != null ? (
+            /* 프로젝트 내 파일 목록 */
+            <div className="flex flex-col flex-1 min-h-0">
+              <button
+                type="button"
+                onClick={() => setSelectedProjectId(null)}
+                className="mb-3 flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-700"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                프로젝트 목록으로
+              </button>
+              <div className="text-sm font-medium text-gray-700 mb-2">
+                {selectedProjectInfo?.projectName}
+                {selectedProjectInfo?.projectYear && ` (${selectedProjectInfo.projectYear})`}
               </div>
-
-              {/* 검토 상태 변경 */}
-              {selectedReview.status === "in_progress" && (
-                <div className="mt-3 flex gap-2">
-                  <button
-                    onClick={() => handleUpdateStatus("request_revision")}
-                    className="flex-1 px-3 py-2 bg-red-600 text-white hover:bg-red-700 rounded"
+              <div className="space-y-2 flex-1 min-h-0 overflow-y-auto pr-1">
+                {filesInSelectedProject.map((review) => (
+                  <div
+                    key={review.id}
+                    onClick={() => handleSelectReview(review)}
+                    className={`p-3 rounded-lg border cursor-pointer transition ${
+                      selectedReview?.id === review.id
+                        ? "border-indigo-500 bg-indigo-50"
+                        : "border-gray-200 hover:border-gray-300"
+                    }`}
                   >
-                    수정 요청
-                  </button>
-                  <button
-                    onClick={() => handleUpdateStatus("approved")}
-                    className="flex-1 px-3 py-2 bg-green-600 text-white hover:bg-green-700 rounded"
-                  >
-                    검토 완료
-                  </button>
-                </div>
-              )}
+                    <div className="flex items-center gap-2 mb-1">
+                      {getStatusIcon(review.status)}
+                      <span className="text-xs font-semibold">{getStatusLabel(review.status)}</span>
+                    </div>
+                    <div className="text-sm font-medium text-gray-900 truncate">
+                      {review.file_name || `파일 ID: ${review.file_asset_id}`}
+                    </div>
+                    {review.reviewer_name && (
+                      <div className="text-xs text-gray-500">검토자: {review.reviewer_name}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            /* 프로젝트 목록 (폴더 선택) */
+            <div className="space-y-2 flex-1 min-h-0 overflow-y-auto pr-1">
+              {projectGroups.map((g) => (
+                <button
+                  key={g.projectId ?? "uncategorized"}
+                  type="button"
+                  onClick={() => setSelectedProjectId(g.projectId ?? -1)}
+                  className="w-full text-left p-3 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/50 transition flex items-center justify-between gap-2"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <FolderOpen className="h-5 w-5 text-indigo-500 shrink-0" />
+                    <div>
+                      <div className="text-sm font-medium text-gray-900 truncate">
+                        {g.projectName}
+                        {g.projectYear && ` (${g.projectYear})`}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {g.reviews.length}개 파일
+                      </div>
+                    </div>
+                  </div>
+                  <ChevronRight className="h-4 w-4 text-gray-400 shrink-0" />
+                </button>
+              ))}
             </div>
           )}
         </div>
 
         {/* 파일 뷰어 */}
-        <div className="flex flex-col gap-4 min-h-0">
-          <div
-            className={
+        <div
+          className={
               isFullscreen
                 ? "fixed inset-0 z-[9999] bg-black overflow-hidden flex flex-col"
-                : "border rounded-lg bg-white flex-1 min-h-0 p-0 overflow-hidden relative"
+                : `border rounded-lg bg-white flex-1 min-h-0 p-0 overflow-hidden relative ${!selectedReview && !loading ? "flex flex-col items-center justify-center py-12 px-6 text-gray-500" : ""}`
             }
           >
-            {fileUrl && selectedReview ? (
-              <>
-                {/* PDF 스크롤 영역: 바깥(main)은 고정, 이 영역에서만 스크롤 */}
-                <div className="absolute inset-0 overflow-y-auto overflow-x-hidden">
-                  <PdfJsKonvaViewer
+            {selectedReview ? (
+              fileUrl ? (
+                <>
+                  {/* PDF 스크롤 영역: 바깥(main)은 고정, 이 영역에서만 스크롤 */}
+                  <div className="absolute inset-0 overflow-y-auto overflow-x-hidden">
+                    <PdfJsKonvaViewer
                     fileUrl={fileUrl}
                     fileId={selectedReview.file_asset_id}
                     fileName={selectedFileAsset?.original_name ?? null}
@@ -398,12 +453,14 @@ export default function ReviewPage() {
                     onFullscreenChange={setIsFullscreen}
                     onStartReview={handleStartReview}
                     onStopReview={handleStopReview}
+                    onRequestRevision={() => handleUpdateStatus("request_revision")}
+                    onApprove={() => handleUpdateStatus("approved")}
                     commentsOpen={commentsOpen}
                     onToggleComments={() => setCommentsOpen((v) => !v)}
                   />
                 </div>
 
-                {/* 코멘트 패널 (우측 슬라이드) */}
+                  {/* 코멘트 패널 (우측 슬라이드) */}
                 <div
                   className={[
                     "absolute right-0 top-[48px] h-[calc(100%-48px)] w-[360px] bg-white border-l shadow-lg z-[60]",
@@ -543,18 +600,33 @@ export default function ReviewPage() {
                   </div>
                 </div>
               </>
+              ) : (
+                /* fileUrl 로딩 전: 툴바 + PDF 로딩 중 (백엔드 통신 없이 즉시 표시) */
+                <div className="absolute inset-0 overflow-hidden">
+                  <PdfJsKonvaViewerLoadingShell
+                    reviewStatus={selectedReview.status}
+                    fullscreen={isFullscreen}
+                    onFullscreenChange={setIsFullscreen}
+                    onStartReview={handleStartReview}
+                    onStopReview={handleStopReview}
+                    onRequestRevision={() => handleUpdateStatus("request_revision")}
+                    onApprove={() => handleUpdateStatus("approved")}
+                    commentsOpen={commentsOpen}
+                    onToggleComments={() => setCommentsOpen((v) => !v)}
+                  />
+                </div>
+              )
             ) : loading ? (
               <div className="flex items-center justify-center h-[600px] text-gray-500">
                 <Loader2 className="h-6 w-6 animate-spin mr-2" />
                 파일을 불러오는 중...
               </div>
             ) : (
-              <div className="flex flex-col items-center justify-center h-[600px] text-gray-500 border rounded">
+              <>
                 <FileText className="h-12 w-12 mb-4 text-gray-400" />
                 <p className="text-sm">파일을 선택하면 여기에 표시됩니다.</p>
-              </div>
+              </>
             )}
-          </div>
         </div>
       </div>
     </div>

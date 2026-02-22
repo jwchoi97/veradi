@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import PendingApprovalsSection from "@/pages/PendingApprovalsSection";
+import PendingPasswordChangesSection from "@/pages/PendingPasswordChangesSection";
 import { fetchAllUsers, deleteUser, updateUser, type AdminUser } from "@/data/files/adminUsersApi";
 import { getAuthedUser } from "@/auth";
+import { usePendingCount } from "@/hooks/usePendingCount";
 import {
   DEPARTMENTS,
   DEPARTMENT_LABEL,
@@ -52,12 +54,13 @@ const DEPARTMENT_OPTIONS = [
   ...DEPARTMENTS.map((d) => ({ value: d as string | null, label: DEPARTMENT_LABEL[d] })),
 ];
 
-type TabId = "all" | "pending";
+type TabId = "all" | "pending" | "password";
 
 export default function UserManagementPage() {
   const me = getAuthedUser();
   const adminId = me?.id ?? null;
   const isAdmin = me?.role === "ADMIN";
+  const { signupPendingCount, passwordPendingCount } = usePendingCount();
 
   const [activeTab, setActiveTab] = useState<TabId>("all");
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -208,10 +211,28 @@ export default function UserManagementPage() {
             }`}
           >
             가입 요청
+            {signupPendingCount > 0 && (
+              <span className="tab-badge">{signupPendingCount}</span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("password")}
+            className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition ${
+              activeTab === "password"
+                ? "border border-slate-200 border-b-0 bg-white text-slate-900 -mb-px"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            비밀번호 변경 요청
+            {passwordPendingCount > 0 && (
+              <span className="tab-badge">{passwordPendingCount}</span>
+            )}
           </button>
         </div>
 
         {activeTab === "pending" && <PendingApprovalsSection embedded />}
+        {activeTab === "password" && <PendingPasswordChangesSection embedded />}
 
         {activeTab === "all" && !isAdmin && (
           <div className="rounded-2xl border border-amber-200/60 bg-amber-50/70 px-4 py-3 text-sm text-amber-900">

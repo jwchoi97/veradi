@@ -647,9 +647,25 @@ export default function MockUploadPage() {
                     {isPlaceholder ? <span className="text-gray-300"> </span> : f.original_name}
                   </td>
 
-                  <td className={`${cellTight} w-24`}>
+                  <td
+                    className={[
+                      cellTight,
+                      "w-24",
+                      !isPlaceholder && getFileExt(f.original_name).toLowerCase() === "hwp" ? "text-center" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  >
                     {isPlaceholder ? (
                       ""
+                    ) : getFileExt(f.original_name).toLowerCase() === "hwp" ? (
+                      <span
+                        className="inline-block text-gray-400 -ml-1"
+                        title="검토 대상 아님"
+                        aria-label="검토 대상 아님"
+                      >
+                        -
+                      </span>
                     ) : (
                       <button
                         type="button"

@@ -86,7 +86,7 @@ export default function ForgotPasswordPage() {
         const msg = (data?.detail ?? (await res.text())) || "비밀번호 변경에 실패했습니다.";
         throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
       }
-      nav("/login", { replace: true, state: { resetSuccess: true } });
+      nav("/login", { replace: true, state: { resetRequested: true } });
     } catch (err: any) {
       setError(err?.message ?? "비밀번호 변경에 실패했습니다.");
     } finally {
