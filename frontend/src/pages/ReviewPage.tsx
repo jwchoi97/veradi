@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { CheckCircle, XCircle, AlertCircle, FileText, Loader2, ChevronRight, ChevronLeft, FolderOpen } from "lucide-react";
 import {
   listContentFilesForReview,
@@ -35,6 +35,35 @@ export default function ReviewPage() {
   /** 프로젝트 선택: null=프로젝트 목록, -1=미분류, number=프로젝트 ID */
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // 브라우저 네이티브 Fullscreen API (F11과 동일)
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const el = fullscreenContainerRef.current;
+    if (!el?.requestFullscreen) return;
+    el.requestFullscreen().catch((err) => {
+      console.warn("Fullscreen request failed:", err);
+      setIsFullscreen(false);
+    });
+  }, [isFullscreen]);
+
+  useEffect(() => {
+    if (isFullscreen) return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.().catch(() => {});
+    }
+  }, [isFullscreen]);
+
+  useEffect(() => {
+    const handler = () => {
+      if (!document.fullscreenElement) {
+        setIsFullscreen(false);
+      }
+    };
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, []);
 
   // 컴포넌트 언마운트 시 blob URL 정리
   useEffect(() => {
@@ -333,6 +362,7 @@ export default function ReviewPage() {
 
         {/* 파일 뷰어 */}
         <div
+          ref={fullscreenContainerRef}
           className={
               isFullscreen
                 ? "fixed inset-0 z-[9999] bg-black overflow-hidden flex flex-col"

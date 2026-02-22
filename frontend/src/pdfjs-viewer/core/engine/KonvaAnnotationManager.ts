@@ -108,6 +108,8 @@ export class KonvaAnnotationManager {
   private penHighlightSelecting = false;
   private penHighlightAnchor: { node: Node; offset: number } | null = null;
   private penHighlightPointerId: number | null = null;
+  /** pen touched empty area in highlight mode; suppress scroll until pointerup */
+  private penHighlightSuppressingScroll: number | null = null;
 
   // highlight DOM rendering (behind textLayer)
   private highlightDomLayerByPage: Map<number, HTMLDivElement> = new Map();
@@ -393,6 +395,7 @@ export class KonvaAnnotationManager {
     this.penHighlightSelecting = false;
     this.penHighlightAnchor = null;
     this.penHighlightPointerId = null;
+    this.penHighlightSuppressingScroll = null;
     try {
       this.stage?.destroy();
     } catch {
@@ -495,7 +498,20 @@ export class KonvaAnnotationManager {
         if (this.currentMode !== "highlight" || getPointerKind(e) !== "pen") return;
         if (!this.container.contains(e.target as Node)) return;
         const range = this.getRangeAtPoint(e.clientX, e.clientY);
-        if (!range) return;
+        if (!range) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.penHighlightSuppressingScroll = e.pointerId;
+          try {
+            const target = e.target as Element | undefined;
+            if (target?.setPointerCapture && typeof e.pointerId === "number") {
+              target.setPointerCapture(e.pointerId);
+            }
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
         this.penHighlightAnchor = { node: range.startContainer, offset: range.startOffset };
@@ -508,6 +524,11 @@ export class KonvaAnnotationManager {
         }
       };
       const onPenPointerMove = (e: PointerEvent) => {
+        if (this.penHighlightSuppressingScroll === e.pointerId) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
         if (!this.penHighlightSelecting || e.pointerId !== this.penHighlightPointerId) return;
         if (this.currentMode !== "highlight") return;
         e.preventDefault();
@@ -528,6 +549,12 @@ export class KonvaAnnotationManager {
         }
       };
       const onPenPointerUp = (e: PointerEvent) => {
+        if (this.penHighlightSuppressingScroll === e.pointerId) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.penHighlightSuppressingScroll = null;
+          return;
+        }
         if (!this.penHighlightSelecting || e.pointerId !== this.penHighlightPointerId) return;
         e.preventDefault();
         e.stopPropagation();
@@ -580,9 +607,9 @@ export class KonvaAnnotationManager {
         mode === "highlight" ? "text" : mode === "none" ? "default" : mode === "eraser" ? "cell" : "crosshair";
       // Touch gestures (scroll/pinch) are handled at the app layer; keep native actions disabled here.
       this.stageContainerEl.style.touchAction = "none";
-      // In highlight mode, let pointer events pass through so the pdf.js text layer can receive
-      // drag-to-select (PC and pad/pen). Then we apply highlights from native selection on pointerup.
-      this.stageContainerEl.style.pointerEvents = mode === "highlight" ? "none" : "auto";
+      // Keep pointer-events: auto in all modes so touchGestures receives touch (pan/pinch).
+      // Pen-only highlight selection uses document-level handlers; finger uses native selection when over text layer.
+      this.stageContainerEl.style.pointerEvents = "auto";
     }
     try {
       this.container.style.cursor = mode === "highlight" ? "text" : "";
@@ -592,6 +619,13 @@ export class KonvaAnnotationManager {
     // leaving freetext closes editor
     if (this.textEditingInput && mode !== "freetext") {
       this.cleanupTextEditorDom();
+    }
+
+    if (prev === "highlight" && mode !== "highlight") {
+      this.penHighlightSelecting = false;
+      this.penHighlightAnchor = null;
+      this.penHighlightPointerId = null;
+      this.penHighlightSuppressingScroll = null;
     }
 
     // reset transient states
@@ -3033,7 +3067,9 @@ export class KonvaAnnotationManager {
     overlay.appendChild(topbar);
     overlay.appendChild(content);
     content.appendChild(ed);
-    document.body.appendChild(overlay);
+    // 전체화면일 때 document.body에 append하면 형제 요소로 들어가 보이지 않음.
+    // fullscreenElement에 append하면 뷰어 내부에 들어가 텍스트 모드가 전체화면에서도 동작함.
+    (document.fullscreenElement || document.body).appendChild(overlay);
     this.textEditingOverlay = overlay;
     this.textEditingInput = ed;
     ed.focus();
