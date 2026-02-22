@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
 import { Upload, Download, Trash2, Loader2 } from "lucide-react";
 import { getAuthedUser } from "@/auth";
 import {
@@ -9,9 +9,9 @@ import {
   FileAsset,
   deleteProjectFile,
   getFileDownloadUrl,
-  listContentFilesForReview,
+  getFileReviewSummariesBulk,
   getFileInlineUrl,
-  type Review,
+  type FileReviewSessionsOut,
 } from "../data/files/api";
 
 import ProjectListTable from "@/components/projects/ProjectListTable";
@@ -69,7 +69,7 @@ function getReviewStatusLabel(status?: string | null) {
     case "request_revision":
       return "수정요청";
     case "in_progress":
-      return "검토중";
+      return "검토필요";
     default:
       return "대기중";
   }
@@ -86,6 +86,85 @@ function getReviewStatusBadgeClass(status?: string | null) {
     default:
       return "bg-gray-100 text-gray-700";
   }
+}
+
+function ReviewStatusCell({
+  fileId,
+  summary,
+  onOpenPdf,
+}: {
+  fileId: number;
+  summary: FileReviewSessionsOut | undefined;
+  onOpenPdf: (opts?: { reviewerUserId?: number; variant?: "baked" | "original" }) => void;
+}) {
+  const [openMenu, setOpenMenu] = useState<"revision" | "approved" | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const close = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpenMenu(null);
+    };
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, []);
+
+  const revSessions = summary?.sessions.filter((s) => s.status === "request_revision") ?? [];
+  const appSessions = summary?.sessions.filter((s) => s.status === "approved") ?? [];
+  const revCount = summary?.request_revision_count ?? 0;
+  const appCount = summary?.approved_count ?? 0;
+
+  const renderBadge = (
+    label: string,
+    count: number,
+    menuType: "revision" | "approved",
+    sessions: typeof revSessions,
+    badgeClass: string
+  ) => {
+    if (count === 0) {
+      return (
+        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${badgeClass}`}>
+          {label} 0
+        </span>
+      );
+    }
+    const isOpen = openMenu === menuType;
+    return (
+      <div ref={menuRef} className="relative inline-block">
+        <button
+          type="button"
+          onClick={() => setOpenMenu(isOpen ? null : menuType)}
+          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold hover:underline cursor-pointer ${badgeClass}`}
+          title={`${label} ${count}건 - 클릭하여 각 항목 보기`}
+        >
+          {label} {count}
+        </button>
+        {isOpen && sessions.length > 0 && (
+          <div className="absolute left-0 top-full mt-1 z-50 min-w-[140px] rounded-lg border bg-white shadow-lg py-1">
+            {sessions.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                className="block w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100"
+                onClick={() => {
+                  onOpenPdf({ reviewerUserId: s.reviewer_id ?? undefined, variant: "baked" });
+                  setOpenMenu(null);
+                }}
+              >
+                {s.reviewer_name ?? `유저 #${s.reviewer_id}`}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {renderBadge("수정요청", revCount, "revision", revSessions, "bg-red-100 text-red-800")}
+      {renderBadge("검토완료", appCount, "approved", appSessions, "bg-green-100 text-green-800")}
+    </div>
+  );
 }
 
 function getBaseUrl(): string {
@@ -130,8 +209,8 @@ export default function MockUploadPage() {
   const [projectFilesMap, setProjectFilesMap] = useState<Record<number, FileAsset[]>>({});
   const [filesLoadingMap, setFilesLoadingMap] = useState<Record<number, boolean>>({});
 
-  // ✅ file_asset_id -> review status (pending/in_progress/request_revision/approved)
-  const [reviewStatusByFileId, setReviewStatusByFileId] = useState<Record<number, string>>({});
+  // file_asset_id -> FileReviewSessionsOut (수정요청/검토완료 건수 및 세션 목록)
+  const [fileReviewSessionsByFileId, setFileReviewSessionsByFileId] = useState<Record<number, FileReviewSessionsOut>>({});
 
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [modalProject, setModalProject] = useState<Project | null>(null);
@@ -266,8 +345,10 @@ export default function MockUploadPage() {
     }
   };
 
-  const openReadonlyPdfInNewTab = async (fileAssetId: number) => {
-    // Open the tab synchronously to avoid popup blockers.
+  const openReadonlyPdfInNewTab = async (
+    fileAssetId: number,
+    options?: { reviewerUserId?: number; variant?: "baked" | "original" }
+  ) => {
     const w = window.open("about:blank", "_blank");
     if (!w) {
       alert("팝업이 차단되어 새 탭을 열 수 없습니다. 브라우저에서 팝업 차단을 해제해 주세요.");
@@ -279,20 +360,21 @@ export default function MockUploadPage() {
       w.document.body.innerHTML =
         "<div style='font-family:system-ui; padding:24px; color:#111827;'>PDF 로딩 중...</div>";
     } catch {
-      // ignore (some browsers may restrict writing)
+      /* ignore */
     }
 
     try {
-      // Open baked (annotated) PDF in a new tab via presigned URL.
-      // Avoid /proxy because new-tab navigation cannot attach X-User-Id header.
-      const { url } = await getFileInlineUrl(fileAssetId);
+      const { url } = await getFileInlineUrl(fileAssetId, {
+        variant: options?.variant ?? "baked",
+        reviewerUserId: options?.reviewerUserId,
+      });
       w.location.href = url;
     } catch (e) {
       console.error(e);
       try {
         w.close();
       } catch {
-        // ignore
+        /* ignore */
       }
       alert("PDF를 여는 데 실패했습니다.");
     }
@@ -315,18 +397,29 @@ export default function MockUploadPage() {
     };
   }, [isUploadModalOpen]);
 
-  /* ---------- data load ---------- */
   const refreshReviewStatuses = async () => {
     try {
-      const data: Review[] = await listContentFilesForReview();
-      const next: Record<number, string> = {};
-      for (const r of data) {
-        if (typeof r.file_asset_id === "number") next[r.file_asset_id] = r.status;
+      const allFileIds: number[] = [];
+      for (const files of Object.values(projectFilesMap)) {
+        for (const f of files) {
+          const ext = getFileExt(f.original_name).toLowerCase();
+          if (ext === "pdf" && ["문제지", "해설지", "정오표"].includes((f.file_type ?? "").trim())) {
+            allFileIds.push(f.id);
+          }
+        }
       }
-      setReviewStatusByFileId(next);
+      if (allFileIds.length === 0) {
+        setFileReviewSessionsByFileId({});
+        return;
+      }
+      const { summaries } = await getFileReviewSummariesBulk(allFileIds);
+      const next: Record<number, FileReviewSessionsOut> = {};
+      for (const s of summaries) {
+        next[s.file_asset_id] = s;
+      }
+      setFileReviewSessionsByFileId(next);
     } catch (e) {
-      // If user lacks permission or endpoint fails, keep UI usable without status.
-      console.warn("Failed to load review statuses", e);
+      console.warn("Failed to load review sessions", e);
     }
   };
 
@@ -368,8 +461,11 @@ export default function MockUploadPage() {
 
   useEffect(() => {
     void loadProjects();
-    void refreshReviewStatuses();
   }, []);
+
+  useEffect(() => {
+    void refreshReviewStatuses();
+  }, [projectFilesMap]);
 
   const handleToggleExpand = (p: Project) => {
     setExpandedProjectIds((prev) => {
@@ -600,7 +696,7 @@ export default function MockUploadPage() {
           <tr>
             <th className="px-3 py-2 text-left w-28">파일 타입</th>
             <th className="px-3 py-2 text-left">파일명</th>
-            <th className="px-3 py-2 text-left w-24">검토상태</th>
+            <th className="px-3 py-2 text-left w-44">검토상태</th>
             <th className="px-3 py-2 text-left w-20">확장자</th>
             <th className="px-3 py-2 text-left w-28">업로드일</th>
             <th className="px-3 py-2 text-right w-36 whitespace-nowrap">선택</th>
@@ -650,7 +746,7 @@ export default function MockUploadPage() {
                   <td
                     className={[
                       cellTight,
-                      "w-24",
+                      "w-44",
                       !isPlaceholder && getFileExt(f.original_name).toLowerCase() === "hwp" ? "text-center" : "",
                     ]
                       .filter(Boolean)
@@ -667,19 +763,11 @@ export default function MockUploadPage() {
                         -
                       </span>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => void openReadonlyPdfInNewTab(f.id)}
-                        className={[
-                          "inline-flex items-center rounded-full px-2 py-0.5",
-                          "text-[11px] font-semibold",
-                          "hover:underline cursor-pointer",
-                          getReviewStatusBadgeClass(reviewStatusByFileId[f.id]),
-                        ].join(" ")}
-                        title="새 탭에서 주석 PDF 열기(읽기 전용)"
-                      >
-                        {getReviewStatusLabel(reviewStatusByFileId[f.id])}
-                      </button>
+                      <ReviewStatusCell
+                        fileId={f.id}
+                        summary={fileReviewSessionsByFileId[f.id]}
+                        onOpenPdf={(opts) => void openReadonlyPdfInNewTab(f.id, opts)}
+                      />
                     )}
                   </td>
 

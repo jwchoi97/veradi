@@ -13,6 +13,14 @@ models.Base.metadata.create_all(bind=engine)
 def get_cors_origins() -> list[str]:
     raw = os.getenv("CORS_ORIGINS", "")
     origins = [o.strip() for o in raw.split(",") if o.strip()]
+    if not origins:
+        # 개발용 기본값: Vite dev(5173), localhost/127.0.0.1
+        origins = [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
     return origins
 
 app = FastAPI()

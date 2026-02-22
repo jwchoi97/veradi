@@ -206,7 +206,8 @@ class ActivityItem(BaseModel):
 
 class ReviewCommentOut(BaseModel):
     id: int
-    review_id: int
+    review_id: int | None = None  # deprecated, use review_session_id
+    review_session_id: int | None = None
     author_id: int | None
     author_name: str | None
     comment_type: str  # "text" or "handwriting"
@@ -256,6 +257,44 @@ class ReviewOut(BaseModel):
 
 class ReviewStatusUpdate(BaseModel):
     status: str  # "in_progress", "request_revision", "approved"
+
+
+class FileReviewSummariesBulkIn(BaseModel):
+    file_ids: list[int]
+
+
+class FileReviewSummariesBulkOut(BaseModel):
+    summaries: list["FileReviewSessionsOut"]
+
+
+class FileReviewSessionsOut(BaseModel):
+    """파일별 검토 세션 요약 (콘텐츠 업로드 페이지용)."""
+    file_asset_id: int
+    file_name: str | None
+    project_id: int | None
+    project_name: str | None
+    project_year: str | None
+    request_revision_count: int
+    approved_count: int
+    sessions: list["ReviewSessionOut"]
+
+
+class ReviewSessionOut(BaseModel):
+    """유저별 검토 세션 (ReviewOut와 동일 형식, reviewer_id=user_id)."""
+    id: int
+    file_asset_id: int
+    project_id: int | None = None
+    file_name: str | None = None
+    project_name: str | None = None
+    project_year: str | None = None
+    status: str
+    reviewer_id: int | None  # = user_id
+    reviewer_name: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    comments: list[ReviewCommentOut] = []
 
 
 class PDFAnnotation(BaseModel):

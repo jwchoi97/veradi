@@ -12,38 +12,45 @@ Goal:
 
 BAKED_POSTFIX = "__baked"
 ANNOTATIONS_POSTFIX = "__ann"
+USER_SUFFIX_PREFIX = "_u"
 
 
-def derive_baked_key(original_key: str, *, postfix: str = BAKED_POSTFIX) -> str:
+def derive_baked_key(original_key: str, *, postfix: str = BAKED_POSTFIX, user_id: int | None = None) -> str:
     """
     Example:
       "foo/bar/name.pdf" -> "foo/bar/name__baked.pdf"
+      with user_id=5 -> "foo/bar/name__baked_u5.pdf"
     """
     key = (original_key or "").strip()
     if not key:
-        return f"baked{postfix}.pdf"
+        suffix = f"{USER_SUFFIX_PREFIX}{user_id}" if user_id is not None else ""
+        return f"baked{postfix}{suffix}.pdf"
 
     dir_part, _, filename = key.rpartition("/")
     base = filename
     if base.lower().endswith(".pdf"):
         base = base[: -len(".pdf")]
-    baked_name = f"{base}{postfix}.pdf"
+    suffix = f"{USER_SUFFIX_PREFIX}{user_id}" if user_id is not None else ""
+    baked_name = f"{base}{postfix}{suffix}.pdf"
     return f"{dir_part}/{baked_name}" if dir_part else baked_name
 
 
-def derive_annotations_key(original_key: str, *, postfix: str = ANNOTATIONS_POSTFIX) -> str:
+def derive_annotations_key(original_key: str, *, postfix: str = ANNOTATIONS_POSTFIX, user_id: int | None = None) -> str:
     """
     Example:
       "foo/bar/name.pdf" -> "foo/bar/name__ann.json"
+      with user_id=5 -> "foo/bar/name__ann_u5.json"
     """
     key = (original_key or "").strip()
     if not key:
-        return f"annotations{postfix}.json"
+        suffix = f"{USER_SUFFIX_PREFIX}{user_id}" if user_id is not None else ""
+        return f"annotations{postfix}{suffix}.json"
 
     dir_part, _, filename = key.rpartition("/")
     base = filename
     if "." in base:
         base = base.rsplit(".", 1)[0]
-    ann_name = f"{base}{postfix}.json"
+    suffix = f"{USER_SUFFIX_PREFIX}{user_id}" if user_id is not None else ""
+    ann_name = f"{base}{postfix}{suffix}.json"
     return f"{dir_part}/{ann_name}" if dir_part else ann_name
 

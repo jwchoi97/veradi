@@ -7,7 +7,7 @@ from typing import List
 
 from ..authz import ensure_can_create_project, ensure_can_manage_project
 from ..mariadb.database import SessionLocal
-from ..mariadb.models import FileAsset, Project, Review, UserRole
+from ..mariadb.models import FileAsset, Project, ReviewSession, UserRole
 from ..minio.service import delete_project_files_by_keys
 from ..utils.storage_derivation import derive_annotations_key, derive_baked_key
 from ..schemas import ProjectCreate, ProjectOut, ProjectUpdate
@@ -76,22 +76,22 @@ def delete_project(
 
     files = db.query(FileAsset).filter(FileAsset.project_id == project_id).all()
     file_ids = [f.id for f in files]
-    reviews = db.query(Review).filter(Review.file_asset_id.in_(file_ids)).all() if file_ids else []
-    review_by_file_id = {r.file_asset_id: r for r in reviews}
+    sessions = db.query(ReviewSession).filter(ReviewSession.file_asset_id.in_(file_ids)).all() if file_ids else []
+    file_by_id = {f.id: f for f in files}
 
-    # Delete original objects + derived sidecars for each project file.
     object_keys: list[str] = []
     for f in files:
         k = (f.file_key or "").strip()
         if not k:
             continue
         object_keys.append(k)
-        object_keys.append(derive_baked_key(k))
-        object_keys.append(derive_annotations_key(k))
-        # Backward-compat: older builds stored annotations under review namespace.
-        r = review_by_file_id.get(f.id)
-        if r:
-            object_keys.append(f"reviews/{r.id}/annotations.json")
+        for s in sessions:
+            if s.file_asset_id == f.id:
+                object_keys.append(derive_baked_key(k, user_id=s.user_id))
+                object_keys.append(derive_annotations_key(k, user_id=s.user_id))
+        if not any(s.file_asset_id == f.id for s in sessions):
+            object_keys.append(derive_baked_key(k))
+            object_keys.append(derive_annotations_key(k))
 
     # Dedup while preserving order
     seen: set[str] = set()

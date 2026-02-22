@@ -9,8 +9,18 @@ import io
 import time
 
 from ..mariadb.database import SessionLocal
-from ..mariadb.models import FileAsset, Review, ReviewComment, User, Project
-from ..schemas import ReviewOut, ReviewCommentOut, ReviewCommentCreate, ReviewCommentUpdate, ReviewStatusUpdate
+from ..mariadb.models import FileAsset, ReviewSession, ReviewComment, User, Project
+from ..schemas import (
+    ReviewOut,
+    ReviewSessionOut,
+    ReviewCommentOut,
+    ReviewCommentCreate,
+    ReviewCommentUpdate,
+    ReviewStatusUpdate,
+    FileReviewSessionsOut,
+    FileReviewSummariesBulkIn,
+    FileReviewSummariesBulkOut,
+)
 from ..authz import ensure_can_manage_project
 from .auth import get_current_user
 from ..minio.service import upload_stream, presign_download_url, upload_json, get_json, DEFAULT_BUCKET
@@ -247,150 +257,153 @@ def _build_baked_pdf_bytes(*, original_pdf_bytes: bytes, annotations: list[dict]
             for typ, data in by_page.get(page_num, []):
                 v = data.get("v")
 
-            # ---------- ink ----------
-            if typ == "ink":
-                pts_norm = data.get("pointsNorm") if v == 2 else None
-                if isinstance(pts_norm, list) and len(pts_norm) >= 4:
-                    pts = []
-                    for i in range(0, len(pts_norm) - 1, 2):
-                        x = float(pts_norm[i] or 0.0) * page_w
-                        y = float(pts_norm[i + 1] or 0.0) * page_h
-                        pts.append(fitz.Point(x, y))
-                    rgb = _parse_color_to_rgb01(data.get("color")) or (0.07, 0.09, 0.12)  # gray-900
-                    width_norm = data.get("widthNorm")
-                    if isinstance(width_norm, (int, float)):
-                        width = max(0.25, float(width_norm) * page_h)
-                    else:
-                        # fallback: interpret width as "pt-ish"
-                        width = max(0.6, float(data.get("width") or 2))
-                    try:
-                        page.draw_polyline(pts, color=rgb, width=width)
-                    except Exception:
-                        # last resort: draw segments
-                        for a, b in zip(pts, pts[1:]):
-                            try:
-                                page.draw_line(a, b, color=rgb, width=width)
-                            except Exception:
-                                pass
-                continue
-
-            # ---------- highlight ----------
-            if typ == "highlight":
-                rgb = _parse_color_to_rgb01(data.get("color")) or (1.0, 0.94, 0.40)
-                opacity = _clamp01(float(data.get("opacity") or 0.75))
-                kind = data.get("kind")
-                if v == 2 and kind == "stroke" and isinstance(data.get("pointsNorm"), list):
-                    pts_norm = data.get("pointsNorm") or []
-                    if len(pts_norm) >= 4:
+                # ---------- ink ----------
+                if typ == "ink":
+                    pts_norm = data.get("pointsNorm") if v == 2 else None
+                    if isinstance(pts_norm, list) and len(pts_norm) >= 4:
                         pts = []
                         for i in range(0, len(pts_norm) - 1, 2):
                             x = float(pts_norm[i] or 0.0) * page_w
                             y = float(pts_norm[i + 1] or 0.0) * page_h
                             pts.append(fitz.Point(x, y))
+                        rgb = _parse_color_to_rgb01(data.get("color")) or (0.07, 0.09, 0.12)  # gray-900
                         width_norm = data.get("widthNorm")
                         if isinstance(width_norm, (int, float)):
-                            width = max(0.5, float(width_norm) * page_h)
+                            # widthNorm: 편집화면과 동일하게 page_w 기준 (프론트엔드는 widthNorm * pageW 사용)
+                            width = max(0.25, float(width_norm) * page_w)
                         else:
-                            width = max(1.0, float(data.get("width") or 12))
+                            # width는 픽셀 단위; 72/96으로 pt 변환하여 편집화면과 비슷하게
+                            width_px = float(data.get("width") or 2)
+                            width = max(0.25, width_px * 72.0 / 96.0)
                         try:
-                            # Draw highlight UNDER the existing page content so text stays crisp.
-                            # (PDF rendering: later drawings overlay earlier content.)
-                            page.draw_polyline(pts, color=rgb, width=width, stroke_opacity=opacity, overlay=False)
-                        except TypeError:
-                            try:
-                                page.draw_polyline(pts, color=rgb, width=width, stroke_opacity=opacity)
-                            except TypeError:
-                                page.draw_polyline(pts, color=rgb, width=width)
+                            page.draw_polyline(pts, color=rgb, width=width)
+                        except Exception:
+                            for a, b in zip(pts, pts[1:]):
+                                try:
+                                    page.draw_line(a, b, color=rgb, width=width)
+                                except Exception:
+                                    pass
                     continue
-                # Multi-rect highlight (one drag => multiple segments)
-                if isinstance(data.get("rectsNorm"), list):
-                    try:
-                        for rn in data.get("rectsNorm") or []:
-                            if not isinstance(rn, dict):
-                                continue
-                            x = float(rn.get("x") or 0.0) * page_w
-                            y = float(rn.get("y") or 0.0) * page_h
-                            w = float(rn.get("width") or 0.0) * page_w
-                            h = float(rn.get("height") or 0.0) * page_h
-                            box = fitz.Rect(x, y, x + max(0.0, w), y + max(0.0, h))
+
+                # ---------- highlight ----------
+                if typ == "highlight":
+                    rgb = _parse_color_to_rgb01(data.get("color")) or (1.0, 0.94, 0.40)
+                    opacity = _clamp01(float(data.get("opacity") or 0.75))
+                    kind = data.get("kind")
+                    if v == 2 and kind == "stroke" and isinstance(data.get("pointsNorm"), list):
+                        pts_norm = data.get("pointsNorm") or []
+                        if len(pts_norm) >= 4:
+                            pts = []
+                            for i in range(0, len(pts_norm) - 1, 2):
+                                x = float(pts_norm[i] or 0.0) * page_w
+                                y = float(pts_norm[i + 1] or 0.0) * page_h
+                                pts.append(fitz.Point(x, y))
+                            width_norm = data.get("widthNorm")
+                            if isinstance(width_norm, (int, float)):
+                                # widthNorm: 편집화면과 동일하게 page_w 기준
+                                width = max(0.5, float(width_norm) * page_w)
+                            else:
+                                width_px = float(data.get("width") or 12)
+                                width = max(0.5, width_px * 72.0 / 96.0)
                             try:
-                                # Underlay highlight so it doesn't wash out text.
-                                page.draw_rect(box, color=None, fill=rgb, fill_opacity=opacity, overlay=False)
+                                page.draw_polyline(pts, color=rgb, width=width, stroke_opacity=opacity, overlay=False)
                             except TypeError:
                                 try:
-                                    page.draw_rect(box, color=None, fill=rgb, fill_opacity=opacity)
+                                    page.draw_polyline(pts, color=rgb, width=width, stroke_opacity=opacity)
                                 except TypeError:
-                                    page.draw_rect(box, color=None, fill=rgb)
-                    except Exception:
-                        pass
-                    continue
-
-                if isinstance(data.get("rectNorm"), dict):
-                    rn = data.get("rectNorm") or {}
-                    x = float(rn.get("x") or 0.0) * page_w
-                    y = float(rn.get("y") or 0.0) * page_h
-                    w = float(rn.get("width") or 0.0) * page_w
-                    h = float(rn.get("height") or 0.0) * page_h
-                    box = fitz.Rect(x, y, x + max(0.0, w), y + max(0.0, h))
-                    try:
-                        page.draw_rect(box, color=None, fill=rgb, fill_opacity=opacity, overlay=False)
-                    except TypeError:
+                                    page.draw_polyline(pts, color=rgb, width=width)
+                        continue
+                    if isinstance(data.get("rectsNorm"), list):
                         try:
-                            page.draw_rect(box, color=None, fill=rgb, fill_opacity=opacity)
-                        except TypeError:
-                            page.draw_rect(box, color=None, fill=rgb)
-                    continue
-                continue
-
-            # ---------- freetext ----------
-            if typ == "freetext":
-                rgb = _parse_color_to_rgb01(data.get("color")) or (0.07, 0.09, 0.12)
-                font = bake_fontname or "helv"
-                if v == 2 and data.get("kind") == "textbox":
-                    x = float(data.get("xNorm") or 0.0) * page_w
-                    y = float(data.get("yNorm") or 0.0) * page_h
-                    w = float(data.get("widthNorm") or 0.25) * page_w
-                    h = float(data.get("heightNorm") or 0.12) * page_h
-                    fs = float(data.get("fontSizeNorm") or (16.0 / max(1.0, page_h))) * page_h
-                    text = str(data.get("text") or "")
-                    # richtext runs: fallback to plain concatenation if present
-                    if not text and isinstance(data.get("runs"), list):
-                        try:
-                            text = "".join([str(r.get("text") or "") for r in (data.get("runs") or []) if isinstance(r, dict)])
+                            for rn in data.get("rectsNorm") or []:
+                                if not isinstance(rn, dict):
+                                    continue
+                                x = float(rn.get("x") or 0.0) * page_w
+                                y = float(rn.get("y") or 0.0) * page_h
+                                w = float(rn.get("width") or 0.0) * page_w
+                                h = float(rn.get("height") or 0.0) * page_h
+                                box = fitz.Rect(x, y, x + max(0.0, w), y + max(0.0, h))
+                                try:
+                                    page.draw_rect(box, color=None, fill=rgb, fill_opacity=opacity, overlay=False)
+                                except TypeError:
+                                    try:
+                                        page.draw_rect(box, color=None, fill=rgb, fill_opacity=opacity)
+                                    except TypeError:
+                                        page.draw_rect(box, color=None, fill=rgb)
                         except Exception:
-                            text = ""
-                    box = fitz.Rect(x, y, x + max(40.0, w), y + max(20.0, h))
-                    try:
-                        # Prefer passing `fontfile` directly to guarantee Unicode glyphs are embedded.
-                        if bake_fontfile:
+                            pass
+                        continue
+                    if isinstance(data.get("rectNorm"), dict):
+                        rn = data.get("rectNorm") or {}
+                        x = float(rn.get("x") or 0.0) * page_w
+                        y = float(rn.get("y") or 0.0) * page_h
+                        w = float(rn.get("width") or 0.0) * page_w
+                        h = float(rn.get("height") or 0.0) * page_h
+                        box = fitz.Rect(x, y, x + max(0.0, w), y + max(0.0, h))
+                        try:
+                            page.draw_rect(box, color=None, fill=rgb, fill_opacity=opacity, overlay=False)
+                        except TypeError:
                             try:
-                                page.insert_textbox(
-                                    box,
-                                    text,
-                                    fontsize=max(6.0, fs),
-                                    fontname=font,
-                                    fontfile=bake_fontfile,
-                                    color=rgb,
-                                    align=0,
-                                )
+                                page.draw_rect(box, color=None, fill=rgb, fill_opacity=opacity)
                             except TypeError:
-                                page.insert_textbox(box, text, fontsize=max(6.0, fs), fontname=font, color=rgb, align=0)
-                        else:
-                            page.insert_textbox(box, text, fontsize=max(6.0, fs), fontname=font, color=rgb, align=0)
-                    except Exception:
-                        # fallback: insert at top-left
+                                page.draw_rect(box, color=None, fill=rgb)
+                        continue
+                    continue
+
+                # ---------- freetext ----------
+                if typ == "freetext":
+                    rgb = _parse_color_to_rgb01(data.get("color")) or (0.07, 0.09, 0.12)
+                    font = bake_fontname or "helv"
+                    if v == 2 and data.get("kind") == "textbox":
+                        x = float(data.get("xNorm") or 0.0) * page_w
+                        y = float(data.get("yNorm") or 0.0) * page_h
+                        w = float(data.get("widthNorm") or 0.25) * page_w
+                        h = float(data.get("heightNorm") or 0.12) * page_h
+                        fs = float(data.get("fontSizeNorm") or (16.0 / max(1.0, page_h))) * page_h
+                        text = str(data.get("text") or "")
+                        if not text and isinstance(data.get("runs"), list):
+                            try:
+                                text = "".join([str(r.get("text") or "") for r in (data.get("runs") or []) if isinstance(r, dict)])
+                            except Exception:
+                                text = ""
+                        box = fitz.Rect(x, y, x + max(40.0, w), y + max(20.0, h))
                         try:
                             if bake_fontfile:
                                 try:
-                                    page.insert_text(
-                                        fitz.Point(x, y + max(6.0, fs)),
+                                    page.insert_textbox(
+                                        box,
                                         text,
                                         fontsize=max(6.0, fs),
                                         fontname=font,
                                         fontfile=bake_fontfile,
                                         color=rgb,
+                                        align=0,
                                     )
                                 except TypeError:
+                                    page.insert_textbox(box, text, fontsize=max(6.0, fs), fontname=font, color=rgb, align=0)
+                            else:
+                                page.insert_textbox(box, text, fontsize=max(6.0, fs), fontname=font, color=rgb, align=0)
+                        except Exception:
+                            try:
+                                if bake_fontfile:
+                                    try:
+                                        page.insert_text(
+                                            fitz.Point(x, y + max(6.0, fs)),
+                                            text,
+                                            fontsize=max(6.0, fs),
+                                            fontname=font,
+                                            fontfile=bake_fontfile,
+                                            color=rgb,
+                                        )
+                                    except TypeError:
+                                        page.insert_text(
+                                            fitz.Point(x, y + max(6.0, fs)),
+                                            text,
+                                            fontsize=max(6.0, fs),
+                                            fontname=font,
+                                            color=rgb,
+                                        )
+                                else:
                                     page.insert_text(
                                         fitz.Point(x, y + max(6.0, fs)),
                                         text,
@@ -398,7 +411,31 @@ def _build_baked_pdf_bytes(*, original_pdf_bytes: bytes, annotations: list[dict]
                                         fontname=font,
                                         color=rgb,
                                     )
-                            else:
+                            except Exception:
+                                pass
+                        continue
+                    # plain freetext (and richtext fallback)
+                    x = float(data.get("xNorm") or 0.0) * page_w if v == 2 else float(data.get("x") or 0.0)
+                    y = float(data.get("yNorm") or 0.0) * page_h if v == 2 else float(data.get("y") or 0.0)
+                    fs = float(data.get("fontSizeNorm") or (16.0 / max(1.0, page_h))) * page_h if v == 2 else float(data.get("fontSize") or 16.0)
+                    text = str(data.get("text") or "")
+                    if not text and isinstance(data.get("runs"), list):
+                        try:
+                            text = "".join([str(r.get("text") or "") for r in (data.get("runs") or []) if isinstance(r, dict)])
+                        except Exception:
+                            text = ""
+                    try:
+                        if bake_fontfile:
+                            try:
+                                page.insert_text(
+                                    fitz.Point(x, y + max(6.0, fs)),
+                                    text,
+                                    fontsize=max(6.0, fs),
+                                    fontname=font,
+                                    fontfile=bake_fontfile,
+                                    color=rgb,
+                                )
+                            except TypeError:
                                 page.insert_text(
                                     fitz.Point(x, y + max(6.0, fs)),
                                     text,
@@ -406,48 +443,17 @@ def _build_baked_pdf_bytes(*, original_pdf_bytes: bytes, annotations: list[dict]
                                     fontname=font,
                                     color=rgb,
                                 )
-                        except Exception:
-                            pass
-                    continue
-
-                # plain freetext (and richtext fallback)
-                x = float(data.get("xNorm") or 0.0) * page_w if v == 2 else float(data.get("x") or 0.0)
-                y = float(data.get("yNorm") or 0.0) * page_h if v == 2 else float(data.get("y") or 0.0)
-                fs = float(data.get("fontSizeNorm") or (16.0 / max(1.0, page_h))) * page_h if v == 2 else float(data.get("fontSize") or 16.0)
-                text = str(data.get("text") or "")
-                if not text and isinstance(data.get("runs"), list):
-                    try:
-                        text = "".join([str(r.get("text") or "") for r in (data.get("runs") or []) if isinstance(r, dict)])
+                        else:
+                            page.insert_text(fitz.Point(x, y + max(6.0, fs)), text, fontsize=max(6.0, fs), fontname=font, color=rgb)
                     except Exception:
-                        text = ""
-                try:
-                    if bake_fontfile:
-                        try:
-                            page.insert_text(
-                                fitz.Point(x, y + max(6.0, fs)),
-                                text,
-                                fontsize=max(6.0, fs),
-                                fontname=font,
-                                fontfile=bake_fontfile,
-                                color=rgb,
-                            )
-                        except TypeError:
-                            page.insert_text(
-                                fitz.Point(x, y + max(6.0, fs)),
-                                text,
-                                fontsize=max(6.0, fs),
-                                fontname=font,
-                                color=rgb,
-                            )
-                    else:
-                        page.insert_text(fitz.Point(x, y + max(6.0, fs)), text, fontsize=max(6.0, fs), fontname=font, color=rgb)
-                except Exception:
-                    pass
-                continue
-            # unknown types are ignored
+                        pass
+                    continue
+                # unknown types are ignored
 
-        baked = doc.tobytes()
-        return baked
+        # garbage=0, deflate=False: 원본 PDF 구조/폰트 렌더링을 최대한 보존하여 편집화면과 동일하게 표시
+        buf = io.BytesIO()
+        doc.save(buf, garbage=0, deflate=False)
+        return buf.getvalue()
     finally:
         doc.close()
 
@@ -495,14 +501,12 @@ def get_file_inline_url(
     file_id: int,
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
-    variant: str | None = Query(default=None, description="PDF variant: baked|original (default: prefer baked when exists)"),
+    variant: str | None = Query(default=None, description="PDF variant: baked|original"),
+    reviewer_user_id: int | None = Query(default=None, description="특정 유저의 baked PDF (variant=baked일 때)"),
 ):
     """
-    새 탭/새 창에서 열 수 있는 presigned URL을 반환합니다.
-    (네비게이션은 커스텀 헤더를 붙일 수 없으므로 /proxy 대신 사용)
-
-    - baked PDF(__baked)가 있으면 baked를 우선 반환
-    - 없으면 원본 PDF를 반환
+    새 탭/새 창에서 열 수 있는 presigned URL.
+    reviewer_user_id: 특정 검토자의 baked PDF를 볼 때 (콘텐츠 업로드에서 수정요청/검토완료 클릭 시)
     """
     user = get_current_user(db, x_user_id)
 
@@ -515,24 +519,21 @@ def get_file_inline_url(
         raise HTTPException(status_code=404, detail="Project not found")
 
     ensure_can_manage_project(user, project)
-
     ensure_bucket(DEFAULT_BUCKET)
 
+    uid = reviewer_user_id if reviewer_user_id is not None else user.id
     preferred_key = file_asset.file_key
-    baked_key = derive_baked_key(file_asset.file_key)
+    baked_key = derive_baked_key(file_asset.file_key, user_id=uid)
     v = (variant or "").strip().lower()
     if v == "original":
         preferred_key = file_asset.file_key
     elif v == "baked":
         preferred_key = baked_key
     else:
-        # Default: prefer baked when it exists (read-only share UX),
-        # but allow viewer to force `variant=original` to avoid double-annotating.
         try:
             minio_client.stat_object(bucket_name=DEFAULT_BUCKET, object_name=baked_key)
             preferred_key = baked_key
         except S3Error as e:
-            # If it doesn't exist (or we can't probe it), fall back to original.
             if e.code not in ("NoSuchKey", "NoSuchObject", "AccessDenied"):
                 raise
 
@@ -557,6 +558,7 @@ def proxy_file_for_viewer(
     x_user_id: str | None = Header(default=None),
     range_header: str | None = Header(default=None, alias="Range"),
     variant: str | None = Query(default=None, description="PDF variant: baked|original"),
+    reviewer_user_id: int | None = Query(default=None),
     perf: int | None = Query(default=None, description="Perf debug: set to 1 to include timing headers/logs"),
 ):
     """파일을 프록시하여 CORS 문제를 해결합니다."""
@@ -570,21 +572,17 @@ def proxy_file_for_viewer(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # 검토 권한 확인
     ensure_can_manage_project(user, project)
 
     try:
         perf_enabled = perf == 1
         t_start = time.perf_counter() if perf_enabled else 0.0
-        # Bucket existence should be ensured at startup / first use; cache prevents per-request MinIO calls.
         ensure_bucket(DEFAULT_BUCKET)
 
-        # Decide which object to stream.
-        # - `variant` is supplied by /view-url so we don't need to probe existence here.
-        # - Still, we may need size for Range responses; use cached probe as fallback.
+        uid = reviewer_user_id if reviewer_user_id is not None else user.id
         preferred_key = file_asset.file_key
         if (variant or "").lower() == "baked":
-            preferred_key = derive_baked_key(file_asset.file_key)
+            preferred_key = derive_baked_key(file_asset.file_key, user_id=uid)
 
         # Avoid a MinIO stat call for every Range request:
         # Prefer DB-cached size when available; fall back to cached stat probe only when needed.
@@ -716,83 +714,98 @@ def proxy_file_for_viewer(
         raise HTTPException(status_code=500, detail=f"Failed to proxy file: {str(e)}")
 
 
+def _session_to_review_out(
+    session: ReviewSession,
+    comments: list[ReviewComment] | None = None,
+) -> ReviewOut:
+    file_asset = session.file_asset
+    project = file_asset.project if file_asset else None
+    reviewer = session.user
+    comment_list = comments if comments is not None else list(session.comments)
+    comment_out_list = []
+    for c in comment_list:
+        author = c.author
+        comment_out_list.append(
+            ReviewCommentOut(
+                id=c.id,
+                review_session_id=c.review_session_id,
+                author_id=c.author_id,
+                author_name=author.name if author else None,
+                comment_type=c.comment_type,
+                text_content=c.text_content,
+                handwriting_image_url=c.handwriting_image_url,
+                page_number=c.page_number,
+                x_position=c.x_position,
+                y_position=c.y_position,
+                created_at=c.created_at,
+            )
+        )
+    return ReviewOut(
+        id=session.id,
+        file_asset_id=session.file_asset_id,
+        project_id=file_asset.project_id if file_asset else None,
+        file_name=file_asset.original_name if file_asset else None,
+        project_name=project.name if project else None,
+        project_year=project.year if project else None,
+        status=session.status,
+        reviewer_id=session.user_id,
+        reviewer_name=reviewer.name if reviewer else None,
+        started_at=session.started_at,
+        completed_at=session.completed_at,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+        comments=comment_out_list,
+    )
+
+
 @router.get("/files/{file_id}", response_model=ReviewOut)
 def get_file_review(
     file_id: int,
+    session_id: int | None = Query(default=None, description="특정 세션 ID (없으면 현재 유저 세션)"),
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
-    """파일의 검토 정보를 조회합니다."""
+    """파일의 검토 정보를 조회합니다. session_id가 없으면 현재 유저의 세션을 반환합니다."""
     user = get_current_user(db, x_user_id)
 
     file_asset = db.query(FileAsset).filter(FileAsset.id == file_id).first()
     if not file_asset:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # 콘텐츠 파일만 검토 가능 (문제지, 해설지, 정오표)
     if file_asset.file_type not in ["문제지", "해설지", "정오표"]:
         raise HTTPException(status_code=400, detail="Only content files can be reviewed")
 
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    
-    if not review:
-        # 검토가 없으면 생성
-        review = Review(
-            file_asset_id=file_id,
-            status="pending",
-        )
-        db.add(review)
-        db.commit()
-        db.refresh(review)
+    if session_id is not None:
+        session = db.query(ReviewSession).filter(
+            ReviewSession.id == session_id,
+            ReviewSession.file_asset_id == file_id,
+        ).first()
+    else:
+        session = db.query(ReviewSession).filter(
+            ReviewSession.file_asset_id == file_id,
+            ReviewSession.user_id == user.id,
+        ).first()
 
-    # 코멘트 조회
+    if not session:
+        if session_id is not None:
+            raise HTTPException(status_code=404, detail="Review session not found")
+        session = ReviewSession(
+            file_asset_id=file_id,
+            user_id=user.id,
+            status="in_progress",
+            started_at=datetime.utcnow(),
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+
     comments = (
         db.query(ReviewComment)
-        .filter(ReviewComment.review_id == review.id)
+        .filter(ReviewComment.review_session_id == session.id)
         .order_by(ReviewComment.created_at.asc())
         .all()
     )
-
-    # 코멘트 작성자 정보 가져오기
-    comment_out_list = []
-    for comment in comments:
-        author = db.query(User).filter(User.id == comment.author_id).first() if comment.author_id else None
-        comment_out_list.append(
-            ReviewCommentOut(
-                id=comment.id,
-                review_id=comment.review_id,
-                author_id=comment.author_id,
-                author_name=author.name if author else None,
-                comment_type=comment.comment_type,
-                text_content=comment.text_content,
-                handwriting_image_url=comment.handwriting_image_url,
-                page_number=comment.page_number,
-                x_position=comment.x_position,
-                y_position=comment.y_position,
-                created_at=comment.created_at,
-            )
-        )
-
-    reviewer = db.query(User).filter(User.id == review.reviewer_id).first() if review.reviewer_id else None
-    file_asset = review.file_asset
-    project = file_asset.project if file_asset else None
-
-    return ReviewOut(
-        id=review.id,
-        file_asset_id=review.file_asset_id,
-        project_id=file_asset.project_id if file_asset else None,
-        file_name=file_asset.original_name if file_asset else None,
-        project_name=project.name if project else None,
-        project_year=project.year if project else None,
-        status=review.status,
-        reviewer_id=review.reviewer_id,
-        reviewer_name=reviewer.name if reviewer else None,
-        started_at=review.started_at,
-        completed_at=review.completed_at,
-        created_at=review.created_at,
-        updated_at=review.updated_at,
-        comments=comment_out_list,
-    )
+    return _session_to_review_out(session, comments)
 
 
 @router.get("/content-files", response_model=list[ReviewOut])
@@ -802,67 +815,235 @@ def list_content_files_for_review(
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
-    """검토 가능한 콘텐츠 파일 목록을 조회합니다. PDF 파일만 검토 대상입니다."""
+    """검토 가능한 콘텐츠 파일 목록. 현재 유저의 세션만 반환 (유저별 검토)."""
     user = get_current_user(db, x_user_id)
 
-    # 콘텐츠 파일만 조회 (문제지, 해설지, 정오표), PDF 확장자만 포함 (HWP 제외)
     query = (
         db.query(FileAsset)
         .filter(FileAsset.file_type.in_(["문제지", "해설지", "정오표"]))
         .filter(FileAsset.original_name.ilike("%.pdf"))
     )
-
-    if project_id:
+    if project_id is not None:
         query = query.filter(FileAsset.project_id == project_id)
-
     files = query.order_by(FileAsset.created_at.desc()).all()
 
-    # 각 파일의 검토 정보 가져오기
-    reviews = []
+    session_by_file = {
+        rs.file_asset_id: rs
+        for rs in db.query(ReviewSession)
+        .filter(
+            ReviewSession.file_asset_id.in_([f.id for f in files]),
+            ReviewSession.user_id == user.id,
+        )
+        .all()
+    }
+
+    result = []
     for file_asset in files:
-        review = db.query(Review).filter(Review.file_asset_id == file_asset.id).first()
-        
-        if status and review and review.status != status:
-            continue
-        if status == "pending" and not review:
-            # pending 상태는 review가 없는 경우도 포함
-            pass
-        elif status and not review:
+        session = session_by_file.get(file_asset.id)
+        if session:
+            st = session.status
+        else:
+            st = "in_progress"  # 디폴트 상태: 검토필요
+
+        if status and st != status:
             continue
 
-        if not review:
-            review = Review(
-                file_asset_id=file_asset.id,
-                status="pending",
+        if session:
+            result.append(_session_to_review_out(session, comments=[]))
+        else:
+            project = file_asset.project if file_asset else None
+            result.append(
+                ReviewOut(
+                    id=0,
+                    file_asset_id=file_asset.id,
+                    project_id=file_asset.project_id if file_asset else None,
+                    file_name=file_asset.original_name if file_asset else None,
+                    project_name=project.name if project else None,
+                    project_year=project.year if project else None,
+                    status="in_progress",
+                    reviewer_id=None,
+                    reviewer_name=None,
+                    started_at=None,
+                    completed_at=None,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                    comments=[],
+                )
             )
-            db.add(review)
-            db.commit()
-            db.refresh(review)
+    return result
 
-        reviewer = db.query(User).filter(User.id == review.reviewer_id).first() if review.reviewer_id else None
-        file_asset = review.file_asset
-        project = file_asset.project if file_asset else None
 
-        reviews.append(
-            ReviewOut(
-                id=review.id,
-                file_asset_id=review.file_asset_id,
-                project_id=file_asset.project_id if file_asset else None,
-                file_name=file_asset.original_name if file_asset else None,
+@router.post("/files/summaries-bulk", response_model=FileReviewSummariesBulkOut)
+def get_file_review_summaries_bulk(
+    payload: FileReviewSummariesBulkIn,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """여러 파일의 검토 세션 요약을 한번에 조회 (콘텐츠 업로드 페이지용)."""
+    user = get_current_user(db, x_user_id)
+
+    result: list[FileReviewSessionsOut] = []
+    for file_id in payload.file_ids:
+        file_asset = db.query(FileAsset).filter(FileAsset.id == file_id).first()
+        if not file_asset:
+            continue
+        project = file_asset.project
+        if not project:
+            continue
+        try:
+            ensure_can_manage_project(user, project)
+        except HTTPException:
+            continue
+
+        sessions = (
+            db.query(ReviewSession)
+            .filter(ReviewSession.file_asset_id == file_id)
+            .order_by(ReviewSession.updated_at.desc())
+            .all()
+        )
+        request_revision_count = sum(1 for s in sessions if s.status == "request_revision")
+        approved_count = sum(1 for s in sessions if s.status == "approved")
+
+        session_out_list = []
+        for s in sessions:
+            reviewer = s.user
+            comments = (
+                db.query(ReviewComment)
+                .filter(ReviewComment.review_session_id == s.id)
+                .order_by(ReviewComment.created_at.asc())
+                .all()
+            )
+            session_out_list.append(
+                ReviewSessionOut(
+                    id=s.id,
+                    file_asset_id=s.file_asset_id,
+                    project_id=file_asset.project_id,
+                    file_name=file_asset.original_name,
+                    project_name=project.name if project else None,
+                    project_year=project.year if project else None,
+                    status=s.status,
+                    reviewer_id=s.user_id,
+                    reviewer_name=reviewer.name if reviewer else None,
+                    started_at=s.started_at,
+                    completed_at=s.completed_at,
+                    created_at=s.created_at,
+                    updated_at=s.updated_at,
+                    comments=[
+                        ReviewCommentOut(
+                            id=c.id,
+                            review_session_id=c.review_session_id,
+                            author_id=c.author_id,
+                            author_name=c.author.name if c.author else None,
+                            comment_type=c.comment_type,
+                            text_content=c.text_content,
+                            handwriting_image_url=c.handwriting_image_url,
+                            page_number=c.page_number,
+                            x_position=c.x_position,
+                            y_position=c.y_position,
+                            created_at=c.created_at,
+                        )
+                        for c in comments
+                    ],
+                )
+            )
+
+        result.append(
+            FileReviewSessionsOut(
+            file_asset_id=file_id,
+            file_name=file_asset.original_name,
+            project_id=file_asset.project_id,
+            project_name=project.name if project else None,
+            project_year=project.year if project else None,
+            request_revision_count=request_revision_count,
+            approved_count=approved_count,
+            sessions=session_out_list,
+        )
+        )
+    return FileReviewSummariesBulkOut(summaries=result)
+
+
+@router.get("/files/{file_id}/sessions", response_model=FileReviewSessionsOut)
+def list_file_review_sessions(
+    file_id: int,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """파일별 검토 세션 목록 (수정요청/검토완료 건수 및 각 유저별 세션). 콘텐츠 업로드 페이지용."""
+    user = get_current_user(db, x_user_id)
+
+    file_asset = db.query(FileAsset).filter(FileAsset.id == file_id).first()
+    if not file_asset:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    project = file_asset.project
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    ensure_can_manage_project(user, project)
+
+    sessions = (
+        db.query(ReviewSession)
+        .filter(ReviewSession.file_asset_id == file_id)
+        .order_by(ReviewSession.updated_at.desc())
+        .all()
+    )
+
+    request_revision_count = sum(1 for s in sessions if s.status == "request_revision")
+    approved_count = sum(1 for s in sessions if s.status == "approved")
+
+    session_out_list = []
+    for s in sessions:
+        reviewer = s.user
+        comments = (
+            db.query(ReviewComment)
+            .filter(ReviewComment.review_session_id == s.id)
+            .order_by(ReviewComment.created_at.asc())
+            .all()
+        )
+        comment_list = [
+            ReviewCommentOut(
+                id=c.id,
+                review_session_id=c.review_session_id,
+                author_id=c.author_id,
+                author_name=c.author.name if c.author else None,
+                comment_type=c.comment_type,
+                text_content=c.text_content,
+                handwriting_image_url=c.handwriting_image_url,
+                page_number=c.page_number,
+                x_position=c.x_position,
+                y_position=c.y_position,
+                created_at=c.created_at,
+            )
+            for c in comments
+        ]
+        session_out_list.append(
+            ReviewSessionOut(
+                id=s.id,
+                file_asset_id=s.file_asset_id,
+                project_id=file_asset.project_id,
+                file_name=file_asset.original_name,
                 project_name=project.name if project else None,
                 project_year=project.year if project else None,
-                status=review.status,
-                reviewer_id=review.reviewer_id,
+                status=s.status,
+                reviewer_id=s.user_id,
                 reviewer_name=reviewer.name if reviewer else None,
-                started_at=review.started_at,
-                completed_at=review.completed_at,
-                created_at=review.created_at,
-                updated_at=review.updated_at,
-                comments=[],
+                started_at=s.started_at,
+                completed_at=s.completed_at,
+                created_at=s.created_at,
+                updated_at=s.updated_at,
+                comments=comment_list,
             )
         )
 
-    return reviews
+    return FileReviewSessionsOut(
+        file_asset_id=file_id,
+        file_name=file_asset.original_name,
+        project_id=file_asset.project_id,
+        project_name=project.name if project else None,
+        project_year=project.year if project else None,
+        request_revision_count=request_revision_count,
+        approved_count=approved_count,
+        sessions=session_out_list,
+    )
 
 
 @router.post("/files/{file_id}/start", response_model=ReviewOut)
@@ -871,53 +1052,35 @@ def start_review(
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
-    """검토를 시작합니다."""
+    """검토를 시작합니다. 현재 유저의 세션을 생성/재개합니다."""
     user = get_current_user(db, x_user_id)
 
     file_asset = db.query(FileAsset).filter(FileAsset.id == file_id).first()
     if not file_asset:
         raise HTTPException(status_code=404, detail="File not found")
 
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    
-    if not review:
-        review = Review(
+    session = db.query(ReviewSession).filter(
+        ReviewSession.file_asset_id == file_id,
+        ReviewSession.user_id == user.id,
+    ).first()
+
+    if not session:
+        session = ReviewSession(
             file_asset_id=file_id,
+            user_id=user.id,
             status="in_progress",
-            reviewer_id=user.id,
             started_at=datetime.utcnow(),
         )
+        db.add(session)
     else:
-        review.status = "in_progress"
-        review.reviewer_id = user.id
-        if not review.started_at:
-            review.started_at = datetime.utcnow()
-        review.updated_at = datetime.utcnow()
+        session.status = "in_progress"
+        if not session.started_at:
+            session.started_at = datetime.utcnow()
+        session.updated_at = datetime.utcnow()
 
-    db.add(review)
     db.commit()
-    db.refresh(review)
-
-    reviewer = db.query(User).filter(User.id == review.reviewer_id).first() if review.reviewer_id else None
-    file_asset = review.file_asset
-    project = file_asset.project if file_asset else None
-
-    return ReviewOut(
-        id=review.id,
-        file_asset_id=review.file_asset_id,
-        project_id=file_asset.project_id if file_asset else None,
-        file_name=file_asset.original_name if file_asset else None,
-        project_name=project.name if project else None,
-        project_year=project.year if project else None,
-        status=review.status,
-        reviewer_id=review.reviewer_id,
-        reviewer_name=reviewer.name if reviewer else None,
-        started_at=review.started_at,
-        completed_at=review.completed_at,
-        created_at=review.created_at,
-        updated_at=review.updated_at,
-        comments=[],
-    )
+    db.refresh(session)
+    return _session_to_review_out(session, comments=[])
 
 
 @router.post("/files/{file_id}/comments", response_model=ReviewCommentOut)
@@ -927,15 +1090,18 @@ def add_review_comment(
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
-    """검토 코멘트를 추가합니다."""
+    """검토 코멘트를 추가합니다 (현재 유저의 세션에)."""
     user = get_current_user(db, x_user_id)
 
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    if not review:
-        raise HTTPException(status_code=404, detail="Review not found")
+    session = db.query(ReviewSession).filter(
+        ReviewSession.file_asset_id == file_id,
+        ReviewSession.user_id == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Review session not found. Start review first.")
 
     comment = ReviewComment(
-        review_id=review.id,
+        review_session_id=session.id,
         author_id=user.id,
         comment_type=payload.comment_type,
         text_content=payload.text_content,
@@ -951,7 +1117,7 @@ def add_review_comment(
 
     return ReviewCommentOut(
         id=comment.id,
-        review_id=comment.review_id,
+        review_session_id=comment.review_session_id,
         author_id=comment.author_id,
         author_name=user.name,
         comment_type=comment.comment_type,
@@ -975,13 +1141,16 @@ def update_review_comment(
     """작성자만 자신의 코멘트를 수정할 수 있습니다 (텍스트 코멘트만)."""
     user = get_current_user(db, x_user_id)
 
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    if not review:
-        raise HTTPException(status_code=404, detail="Review not found")
+    session = db.query(ReviewSession).filter(
+        ReviewSession.file_asset_id == file_id,
+        ReviewSession.user_id == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Review session not found")
 
     comment = (
         db.query(ReviewComment)
-        .filter(ReviewComment.review_id == review.id, ReviewComment.id == comment_id)
+        .filter(ReviewComment.review_session_id == session.id, ReviewComment.id == comment_id)
         .first()
     )
     if not comment:
@@ -1004,7 +1173,7 @@ def update_review_comment(
 
     return ReviewCommentOut(
         id=comment.id,
-        review_id=comment.review_id,
+        review_session_id=comment.review_session_id,
         author_id=comment.author_id,
         author_name=user.name,
         comment_type=comment.comment_type,
@@ -1027,13 +1196,16 @@ def delete_review_comment(
     """작성자만 자신의 코멘트를 삭제할 수 있습니다."""
     user = get_current_user(db, x_user_id)
 
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    if not review:
-        raise HTTPException(status_code=404, detail="Review not found")
+    session = db.query(ReviewSession).filter(
+        ReviewSession.file_asset_id == file_id,
+        ReviewSession.user_id == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Review session not found")
 
     comment = (
         db.query(ReviewComment)
-        .filter(ReviewComment.review_id == review.id, ReviewComment.id == comment_id)
+        .filter(ReviewComment.review_session_id == session.id, ReviewComment.id == comment_id)
         .first()
     )
     if not comment:
@@ -1057,27 +1229,28 @@ async def upload_handwriting_image(
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
-    """손글씨 이미지를 업로드합니다."""
+    """손글씨 이미지를 업로드합니다 (현재 유저 세션용)."""
     user = get_current_user(db, x_user_id)
 
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    if not review:
-        raise HTTPException(status_code=404, detail="Review not found")
+    session = db.query(ReviewSession).filter(
+        ReviewSession.file_asset_id == file_id,
+        ReviewSession.user_id == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Review session not found")
 
     # 이미지 파일만 허용
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Only image files are allowed")
 
     original_name = file.filename or "handwriting.jpg"
-    
-    # 파일명 생성
-    safe_name = f"review_{review.id}_{user.id}_{datetime.utcnow().timestamp()}.jpg"
-    object_key = f"reviews/{review.id}/handwriting/{safe_name}"
+    safe_name = f"review_{session.id}_{user.id}_{datetime.utcnow().timestamp()}.jpg"
+    object_key = f"review_sessions/{session.id}/handwriting/{safe_name}"
 
     try:
         ensure_bucket(DEFAULT_BUCKET)
         up = upload_stream(
-            project_id=review.file_asset.project_id,
+            project_id=session.file_asset.project_id,
             fileobj=file.file,
             original_filename=original_name,
             content_type=file.content_type,
@@ -1113,46 +1286,27 @@ def stop_review(
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
-    """검토를 중지하고 대기중 상태로 되돌립니다."""
+    """검토를 중지합니다. 세션은 유지하며 status를 pending(대기중)으로 되돌립니다."""
     user = get_current_user(db, x_user_id)
 
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    if not review:
-        raise HTTPException(status_code=404, detail="Review not found")
+    session = db.query(ReviewSession).filter(
+        ReviewSession.file_asset_id == file_id,
+        ReviewSession.user_id == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Review session not found")
 
-    if review.status != "in_progress":
-        raise HTTPException(status_code=400, detail="Only in_progress reviews can be stopped")
+    if session.status not in ("in_progress", "request_revision", "approved"):
+        raise HTTPException(status_code=400, detail="Only in_progress, request_revision, or approved reviews can be stopped")
 
-    review.status = "pending"
-    review.reviewer_id = None
-    review.started_at = None
-    review.completed_at = None
-    review.updated_at = datetime.utcnow()
+    session.status = "pending"
+    session.completed_at = None
+    session.updated_at = datetime.utcnow()
 
-    db.add(review)
+    db.add(session)
     db.commit()
-    db.refresh(review)
-
-    reviewer = db.query(User).filter(User.id == review.reviewer_id).first() if review.reviewer_id else None
-    file_asset = review.file_asset
-    project = file_asset.project if file_asset else None
-
-    return ReviewOut(
-        id=review.id,
-        file_asset_id=review.file_asset_id,
-        project_id=file_asset.project_id if file_asset else None,
-        file_name=file_asset.original_name if file_asset else None,
-        project_name=project.name if project else None,
-        project_year=project.year if project else None,
-        status=review.status,
-        reviewer_id=review.reviewer_id,
-        reviewer_name=reviewer.name if reviewer else None,
-        started_at=review.started_at,
-        completed_at=review.completed_at,
-        created_at=review.created_at,
-        updated_at=review.updated_at,
-        comments=[],
-    )
+    db.refresh(session)
+    return _session_to_review_out(session, comments=[])
 
 
 @router.get("/files/{file_id}/annotations", response_model=PDFAnnotationsData)
@@ -1174,16 +1328,14 @@ def get_pdf_annotations(
 
     ensure_can_manage_project(user, project)
 
-    # MinIO에서 주석 데이터 로드 (원본 파일 옆 postfix JSON)
-    object_key = derive_annotations_key(file_asset.file_key)
+    # 현재 유저의 세션에서 annotations 로드 (user별 JSON)
+    session = db.query(ReviewSession).filter(
+        ReviewSession.file_asset_id == file_id,
+        ReviewSession.user_id == user.id,
+    ).first()
+    ann_key = derive_annotations_key(file_asset.file_key, user_id=user.id)
     try:
-        data = get_json(object_key=object_key)
-        # Backward-compat: older builds stored annotations under review namespace.
-        if not data:
-            review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-            if review:
-                legacy_key = f"reviews/{review.id}/annotations.json"
-                data = get_json(object_key=legacy_key)
+        data = get_json(object_key=ann_key)
         if not data:
             return PDFAnnotationsData(annotations=[])
         
@@ -1241,16 +1393,22 @@ def save_pdf_annotations(
     perf_enabled = perf == 1
     t0 = time.perf_counter() if perf_enabled else 0.0
 
-    # Ensure review exists (workflow), but store JSON next to original key.
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    if not review:
-        review = Review(file_asset_id=file_id, status="pending")
-        db.add(review)
+    session = db.query(ReviewSession).filter(
+        ReviewSession.file_asset_id == file_id,
+        ReviewSession.user_id == user.id,
+    ).first()
+    if not session:
+        session = ReviewSession(
+            file_asset_id=file_id,
+            user_id=user.id,
+            status="in_progress",
+            started_at=datetime.utcnow(),
+        )
+        db.add(session)
         db.commit()
-        db.refresh(review)
+        db.refresh(session)
 
-    # MinIO에 주석 데이터 저장 (원본 파일 옆 postfix JSON)
-    object_key = derive_annotations_key(file_asset.file_key)
+    object_key = derive_annotations_key(file_asset.file_key, user_id=user.id)
     try:
         # 현재 시간
         now = datetime.utcnow().isoformat()
@@ -1338,8 +1496,14 @@ def bake_review_pdf(
     perf_enabled = perf == 1
     t0 = time.perf_counter() if perf_enabled else 0.0
 
-    # Load annotations JSON (sidecar next to original)
-    ann_key = derive_annotations_key(file_asset.file_key)
+    session = db.query(ReviewSession).filter(
+        ReviewSession.file_asset_id == file_id,
+        ReviewSession.user_id == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Review session not found. Start review and add annotations first.")
+
+    ann_key = derive_annotations_key(file_asset.file_key, user_id=user.id)
     data = get_json(object_key=ann_key) or {}
     anns = data.get("annotations", [])
     if not isinstance(anns, list):
@@ -1362,8 +1526,7 @@ def bake_review_pdf(
         raise HTTPException(status_code=500, detail=f"Failed to bake PDF: {str(e)}")
     t_bake = time.perf_counter() if perf_enabled else 0.0
 
-    # Upload baked next to original (postfix)
-    baked_key = derive_baked_key(file_asset.file_key)
+    baked_key = derive_baked_key(file_asset.file_key, user_id=user.id)
     try:
         up = upload_stream(
             project_id=file_asset.project_id,
@@ -1417,16 +1580,22 @@ def add_pdf_annotation(
 
     ensure_can_manage_project(user, project)
 
-    # Ensure review exists (workflow), but store JSON next to original key.
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    if not review:
-        review = Review(file_asset_id=file_id, status="pending")
-        db.add(review)
+    session = db.query(ReviewSession).filter(
+        ReviewSession.file_asset_id == file_id,
+        ReviewSession.user_id == user.id,
+    ).first()
+    if not session:
+        session = ReviewSession(
+            file_asset_id=file_id,
+            user_id=user.id,
+            status="in_progress",
+            started_at=datetime.utcnow(),
+        )
+        db.add(session)
         db.commit()
-        db.refresh(review)
+        db.refresh(session)
 
-    # 기존 주석 로드
-    object_key = derive_annotations_key(file_asset.file_key)
+    object_key = derive_annotations_key(file_asset.file_key, user_id=user.id)
     data = get_json(object_key=object_key) or {}
     annotations_list = data.get("annotations", [])
 
@@ -1467,45 +1636,28 @@ def update_review_status(
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
-    """검토 상태를 업데이트합니다."""
+    """검토 상태를 업데이트합니다 (현재 유저 세션)."""
     user = get_current_user(db, x_user_id)
 
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    if not review:
-        raise HTTPException(status_code=404, detail="Review not found")
+    session = db.query(ReviewSession).filter(
+        ReviewSession.file_asset_id == file_id,
+        ReviewSession.user_id == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Review session not found")
 
     if payload.status not in ["in_progress", "request_revision", "approved"]:
         raise HTTPException(status_code=400, detail="Invalid status")
 
-    review.status = payload.status
-    review.updated_at = datetime.utcnow()
+    session.status = payload.status
+    session.updated_at = datetime.utcnow()
 
     if payload.status == "approved":
-        review.completed_at = datetime.utcnow()
-    elif payload.status == "request_revision":
-        review.completed_at = None  # 수정 요청 시 완료 시각 초기화
+        session.completed_at = datetime.utcnow()
+    elif payload.status in ("in_progress", "request_revision"):
+        session.completed_at = None
 
-    db.add(review)
+    db.add(session)
     db.commit()
-    db.refresh(review)
-
-    reviewer = db.query(User).filter(User.id == review.reviewer_id).first() if review.reviewer_id else None
-    file_asset = review.file_asset
-    project = file_asset.project if file_asset else None
-
-    return ReviewOut(
-        id=review.id,
-        file_asset_id=review.file_asset_id,
-        project_id=file_asset.project_id if file_asset else None,
-        file_name=file_asset.original_name if file_asset else None,
-        project_name=project.name if project else None,
-        project_year=project.year if project else None,
-        status=review.status,
-        reviewer_id=review.reviewer_id,
-        reviewer_name=reviewer.name if reviewer else None,
-        started_at=review.started_at,
-        completed_at=review.completed_at,
-        created_at=review.created_at,
-        updated_at=review.updated_at,
-        comments=[],
-    )
+    db.refresh(session)
+    return _session_to_review_out(session, comments=[])

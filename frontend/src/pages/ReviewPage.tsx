@@ -1,28 +1,19 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { CheckCircle, XCircle, AlertCircle, MessageSquare, FileText, Loader2, ChevronRight, ChevronLeft, FolderOpen } from "lucide-react";
+import { CheckCircle, XCircle, AlertCircle, FileText, Loader2, ChevronRight, ChevronLeft, FolderOpen } from "lucide-react";
 import {
   listContentFilesForReview,
   getFileReview,
-  startReview,
-  stopReview,
-  addReviewComment,
-  updateReviewComment,
-  deleteReviewComment,
   updateReviewStatus,
   getFileViewUrl,
   type Review,
-  type ReviewComment,
-  type ReviewCommentCreate,
   fetchProjects,
   type Project,
   getProjectFiles,
   type FileAsset,
 } from "@/data/files/api";
-import { getAuthedUser } from "@/auth";
 import PdfJsKonvaViewer, { PdfJsKonvaViewerLoadingShell } from "@/components/PdfJsKonvaViewer";
 
 export default function ReviewPage() {
-  const me = getAuthedUser();
   const [deepLinkFileAssetId] = useState<number | null>(() => {
     try {
       const sp = new URLSearchParams(window.location.search);
@@ -40,14 +31,10 @@ export default function ReviewPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [commentText, setCommentText] = useState("");
-  const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
-  const [editingCommentText, setEditingCommentText] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   /** 프로젝트 선택: null=프로젝트 목록, -1=미분류, number=프로젝트 ID */
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [commentsOpen, setCommentsOpen] = useState(false);
 
   // 컴포넌트 언마운트 시 blob URL 정리
   useEffect(() => {
@@ -79,10 +66,6 @@ export default function ReviewPage() {
     setSelectedReview(null);
     setSelectedFileAsset(null);
     setFileUrl(null);
-    setCommentsOpen(false);
-    setCommentText("");
-    setEditingCommentId(null);
-    setEditingCommentText("");
 
     setLoading(true);
     try {
@@ -141,10 +124,6 @@ export default function ReviewPage() {
     setSelectedReview(review);
     setSelectedFileAsset(null);
     setFileUrl(null);
-    setCommentsOpen(false);
-    setCommentText("");
-    setEditingCommentId(null);
-    setEditingCommentText("");
 
     try {
       // 상세 정보 조회 (코멘트 포함)
@@ -168,85 +147,7 @@ export default function ReviewPage() {
     }
   };
 
-  const handleStartReview = async () => {
-    if (!selectedReview) return;
-    try {
-      const updated = await startReview(selectedReview.file_asset_id);
-      setSelectedReview(updated);
-      void loadReviews();
-    } catch (e) {
-      console.error("Failed to start review", e);
-    }
-  };
-
-  const handleStopReview = async () => {
-    if (!selectedReview) return;
-    try {
-      const updated = await stopReview(selectedReview.file_asset_id);
-      setSelectedReview(updated);
-      void loadReviews();
-    } catch (e) {
-      console.error("Failed to stop review", e);
-    }
-  };
-
-  const handleAddTextComment = async () => {
-    if (!selectedReview || !commentText.trim()) return;
-    try {
-      const comment: ReviewCommentCreate = {
-        comment_type: "text",
-        text_content: commentText,
-      };
-      await addReviewComment(selectedReview.file_asset_id, comment);
-      setCommentText("");
-      // 리뷰 새로고침
-      const updated = await getFileReview(selectedReview.file_asset_id);
-      setSelectedReview(updated);
-    } catch (e) {
-      console.error("Failed to add comment", e);
-    }
-  };
-
-  const handleEditComment = (c: ReviewComment) => {
-    if (!c || c.comment_type !== "text") return;
-    setEditingCommentId(c.id);
-    setEditingCommentText(c.text_content || "");
-  };
-
-  const handleSaveEditedComment = async () => {
-    if (!selectedReview) return;
-    if (!editingCommentId) return;
-    const text = (editingCommentText || "").trim();
-    if (!text) return;
-    try {
-      await updateReviewComment(selectedReview.file_asset_id, editingCommentId, { text_content: text });
-      setEditingCommentId(null);
-      setEditingCommentText("");
-      const updated = await getFileReview(selectedReview.file_asset_id);
-      setSelectedReview(updated);
-    } catch (e) {
-      console.error("Failed to update comment", e);
-    }
-  };
-
-  const handleDeleteComment = async (c: ReviewComment) => {
-    if (!selectedReview) return;
-    if (!c) return;
-    if (!confirm("이 코멘트를 삭제할까요?")) return;
-    try {
-      await deleteReviewComment(selectedReview.file_asset_id, c.id);
-      if (editingCommentId === c.id) {
-        setEditingCommentId(null);
-        setEditingCommentText("");
-      }
-      const updated = await getFileReview(selectedReview.file_asset_id);
-      setSelectedReview(updated);
-    } catch (e) {
-      console.error("Failed to delete comment", e);
-    }
-  };
-
-  const handleUpdateStatus = async (status: "request_revision" | "approved") => {
+  const handleUpdateStatus = async (status: "in_progress" | "request_revision" | "approved") => {
     if (!selectedReview) return;
     try {
       const updated = await updateReviewStatus(selectedReview.file_asset_id, { status });
@@ -277,7 +178,7 @@ export default function ReviewPage() {
       case "request_revision":
         return "수정요청";
       case "in_progress":
-        return "검토중";
+        return "검토필요";
       default:
         return "대기중";
     }
@@ -349,8 +250,7 @@ export default function ReviewPage() {
               className="px-3 py-2 border rounded-lg text-sm"
             >
               <option value="all">전체</option>
-              <option value="pending">대기중</option>
-              <option value="in_progress">검토중</option>
+              <option value="in_progress">검토필요</option>
               <option value="request_revision">수정요청</option>
               <option value="approved">검토완료</option>
             </select>
@@ -451,153 +351,10 @@ export default function ReviewPage() {
                     reviewStatus={selectedReview.status}
                     fullscreen={isFullscreen}
                     onFullscreenChange={setIsFullscreen}
-                    onStartReview={handleStartReview}
-                    onStopReview={handleStopReview}
+                    onSetInProgress={() => handleUpdateStatus("in_progress")}
                     onRequestRevision={() => handleUpdateStatus("request_revision")}
                     onApprove={() => handleUpdateStatus("approved")}
-                    commentsOpen={commentsOpen}
-                    onToggleComments={() => setCommentsOpen((v) => !v)}
                   />
-                </div>
-
-                  {/* 코멘트 패널 (우측 슬라이드) */}
-                <div
-                  className={[
-                    "absolute right-0 top-[48px] h-[calc(100%-48px)] w-[360px] bg-white border-l shadow-lg z-[60]",
-                    "transform transition-transform duration-200 ease-out",
-                    commentsOpen ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none",
-                  ].join(" ")}
-                  role="complementary"
-                  aria-label="코멘트"
-                >
-                  <div className="flex items-center justify-between px-3 py-2 border-b bg-gray-50">
-                    <div className="text-sm font-semibold text-gray-900">코멘트</div>
-                    <button
-                      type="button"
-                      className="px-2 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded"
-                      onClick={() => setCommentsOpen(false)}
-                      title="닫기"
-                    >
-                      닫기
-                    </button>
-                  </div>
-
-                  <div className="p-3 space-y-3 h-[calc(100%-44px)] overflow-y-auto">
-                    {/* 코멘트 입력 */}
-                    <div className="flex gap-2 items-start">
-                      <textarea
-                        value={commentText}
-                        onChange={(e) => setCommentText(e.target.value)}
-                        placeholder="코멘트를 입력하세요..."
-                        className="flex-1 px-3 py-2 border rounded-lg text-sm resize-none"
-                        rows={3}
-                      />
-                      <button
-                        onClick={handleAddTextComment}
-                        disabled={!commentText.trim()}
-                        className="px-3 py-2 bg-indigo-600 text-white hover:bg-indigo-700 rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="코멘트 추가"
-                      >
-                        <MessageSquare className="h-4 w-4" />
-                      </button>
-                    </div>
-
-                    {/* 코멘트 목록 */}
-                    <div className="space-y-2">
-                      {selectedReview.comments.length === 0 ? (
-                        <div className="text-sm text-gray-500">코멘트가 없습니다.</div>
-                      ) : (
-                        selectedReview.comments.map((comment) => (
-                          <div key={comment.id} className="border rounded-lg p-2">
-                            <div className="flex items-center justify-between mb-1 gap-2">
-                              <span className="text-xs font-semibold text-gray-700 truncate">
-                                {comment.author_name || "알 수 없음"}
-                              </span>
-                              <span className="text-xs text-gray-500 shrink-0">
-                                {new Date(comment.created_at).toLocaleString("ko-KR")}
-                              </span>
-                            </div>
-                            {comment.comment_type === "text" && (
-                              <>
-                                {editingCommentId === comment.id ? (
-                                  <div className="space-y-2">
-                                    <textarea
-                                      value={editingCommentText}
-                                      onChange={(e) => setEditingCommentText(e.target.value)}
-                                      className="w-full px-3 py-2 border rounded-lg text-sm resize-none"
-                                      rows={3}
-                                    />
-                                    <div className="flex gap-2 justify-end">
-                                      <button
-                                        onClick={() => {
-                                          setEditingCommentId(null);
-                                          setEditingCommentText("");
-                                        }}
-                                        className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded"
-                                      >
-                                        취소
-                                      </button>
-                                      <button
-                                        onClick={handleSaveEditedComment}
-                                        disabled={!editingCommentText.trim()}
-                                        className="px-3 py-1.5 text-sm bg-indigo-600 text-white hover:bg-indigo-700 rounded disabled:opacity-50"
-                                      >
-                                        저장
-                                      </button>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="text-sm text-gray-900 whitespace-pre-wrap">{comment.text_content}</div>
-                                )}
-
-                                {/* 작성자만 수정/삭제 */}
-                                {me?.id && comment.author_id === me.id && editingCommentId !== comment.id && (
-                                  <div className="mt-2 flex gap-2 justify-end">
-                                    <button
-                                      onClick={() => handleEditComment(comment)}
-                                      className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded"
-                                    >
-                                      수정
-                                    </button>
-                                    <button
-                                      onClick={() => handleDeleteComment(comment)}
-                                      className="px-3 py-1.5 text-xs bg-red-600 text-white hover:bg-red-700 rounded"
-                                    >
-                                      삭제
-                                    </button>
-                                  </div>
-                                )}
-                              </>
-                            )}
-                            {comment.comment_type === "attachment" && (
-                              <div className="text-sm">
-                                <div className="flex items-center justify-between gap-2">
-                                  <a
-                                    href={comment.handwriting_image_url || "#"}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-indigo-600 hover:underline truncate"
-                                    title={comment.text_content || "첨부 PDF"}
-                                  >
-                                    {comment.text_content || "첨부 PDF"}
-                                  </a>
-                                  {me?.id && comment.author_id === me.id && (
-                                    <button
-                                      onClick={() => handleDeleteComment(comment)}
-                                      className="px-3 py-1.5 text-xs bg-red-600 text-white hover:bg-red-700 rounded"
-                                    >
-                                      삭제
-                                    </button>
-                                  )}
-                                </div>
-                                <div className="text-xs text-gray-500 mt-1">첨부(PDF)</div>
-                              </div>
-                            )}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
                 </div>
               </>
               ) : (
@@ -607,12 +364,9 @@ export default function ReviewPage() {
                     reviewStatus={selectedReview.status}
                     fullscreen={isFullscreen}
                     onFullscreenChange={setIsFullscreen}
-                    onStartReview={handleStartReview}
-                    onStopReview={handleStopReview}
+                    onSetInProgress={() => handleUpdateStatus("in_progress")}
                     onRequestRevision={() => handleUpdateStatus("request_revision")}
                     onApprove={() => handleUpdateStatus("approved")}
-                    commentsOpen={commentsOpen}
-                    onToggleComments={() => setCommentsOpen((v) => !v)}
                   />
                 </div>
               )

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..authz import ensure_can_manage_project
 from ..mariadb.database import SessionLocal
-from ..mariadb.models import FileAsset, Review
+from ..mariadb.models import FileAsset, ReviewSession
 from ..minio.service import upload_stream
 from .auth import get_current_user
 from ..utils.storage_derivation import derive_baked_key
@@ -48,18 +48,23 @@ async def save_pdf_with_annotations(
 
     ensure_can_manage_project(user, project)
 
-    # Ensure a Review exists (review workflow state)
-    review = db.query(Review).filter(Review.file_asset_id == file_id).first()
-    if not review:
-        review = Review(file_asset_id=file_id, status="pending")
-        db.add(review)
+    session = db.query(ReviewSession).filter(
+        ReviewSession.file_asset_id == file_id,
+        ReviewSession.user_id == user.id,
+    ).first()
+    if not session:
+        session = ReviewSession(
+            file_asset_id=file_id,
+            user_id=user.id,
+            status="in_progress",
+            started_at=datetime.utcnow(),
+        )
+        db.add(session)
         db.commit()
-        db.refresh(review)
+        db.refresh(session)
 
     original_name = file.filename or f"annotated-{file_id}.pdf"
-    # Store baked PDF next to original using deterministic postfix key.
-    # We keep the original `asset.file_key` intact.
-    object_key = derive_baked_key(asset.file_key)
+    object_key = derive_baked_key(asset.file_key, user_id=user.id)
 
     try:
         up = upload_stream(

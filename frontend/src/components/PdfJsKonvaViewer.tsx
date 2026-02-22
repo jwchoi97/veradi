@@ -4,7 +4,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import { EventBus, PDFLinkService, PDFViewer } from "pdfjs-dist/web/pdf_viewer.mjs";
 import "pdfjs-dist/web/pdf_viewer.css";
 import Konva from "konva";
-import { Mail, Maximize2, Minimize2, Save, PlayCircle, Square, Loader2, XCircle, CheckCircle } from "lucide-react";
+import { Maximize2, Minimize2, Save, Loader2, XCircle, CheckCircle, AlertCircle } from "lucide-react";
 import { getAuthedUser } from "@/auth";
 import { KonvaAnnotationManager } from "@/pdfjs-viewer/main";
 import { attachTouchGestures } from "@/pdfjs-viewer/core/input/touchGestures";
@@ -45,7 +45,7 @@ const PDF_JS_KONVA_VIEWER_CSS = `
 .pdf-viewer-xscroll{width:100%;overflow-x:auto;overflow-y:hidden;overscroll-behavior:contain;background:#374151}
 .pdf-viewer-container{width:100%}
 .pdf-viewer-viewer{position:relative}
-.pdf-viewer-tool-settings{position:fixed;width:260px;background:#0b1220;color:#f9fafb;border:1px solid rgba(255,255,255,.14);border-radius:12px;padding:10px 10px 12px;z-index:80;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.pdf-viewer-tool-settings{position:fixed;width:260px;background:#0b1220;color:#f9fafb;border:1px solid rgba(255,255,255,.14);border-radius:12px;padding:10px 10px 12px;z-index:150;box-shadow:0 10px 30px rgba(0,0,0,.35)}
 .pdf-viewer-tool-settings .row{display:flex;align-items:center;gap:10px;margin-top:10px}
 .pdf-viewer-tool-settings .row:first-child{margin-top:0}
 .pdf-viewer-tool-settings .label{width:44px;font-size:12px;opacity:.9}
@@ -65,24 +65,18 @@ export type PdfJsKonvaViewerLoadingShellProps = {
   reviewStatus?: string | null;
   fullscreen?: boolean;
   onFullscreenChange?: (enabled: boolean) => void;
-  onStartReview?: () => void;
-  onStopReview?: () => void;
+  onSetInProgress?: () => void;
   onRequestRevision?: () => void;
   onApprove?: () => void;
-  commentsOpen?: boolean;
-  onToggleComments?: () => void;
 };
 
 export function PdfJsKonvaViewerLoadingShell({
   reviewStatus = null,
   fullscreen = false,
   onFullscreenChange,
-  onStartReview,
-  onStopReview,
+  onSetInProgress,
   onRequestRevision,
   onApprove,
-  commentsOpen = false,
-  onToggleComments,
 }: PdfJsKonvaViewerLoadingShellProps) {
   return (
     <div className="w-full bg-gray-50 relative flex flex-col" style={{ minHeight: "100%" }}>
@@ -102,19 +96,20 @@ export function PdfJsKonvaViewerLoadingShell({
           <button className="btn" disabled>100%</button>
         </div>
         <div className="group right">
-          {reviewStatus === "pending" && onStartReview && (
-            <button className="btn" onClick={onStartReview} title="검토 시작">
-              <PlayCircle className="h-4 w-4" />
-            </button>
-          )}
-          {reviewStatus === "in_progress" && (
+          {(reviewStatus === "in_progress" ||
+            reviewStatus === "request_revision" ||
+            reviewStatus === "approved") && (
             <div className="btnbox" role="group">
-              <button type="button" className="segbtn" onClick={onStopReview} title="검토 중지">
-                <Square className="h-4 w-4" />
-              </button>
+              {onSetInProgress && (
+                <>
+                  <button type="button" className="segbtn" onClick={onSetInProgress} title="검토필요">
+                    <AlertCircle className="h-4 w-4" />
+                  </button>
+                  <span className="segdiv" />
+                </>
+              )}
               {onRequestRevision && (
                 <>
-                  <span className="segdiv" />
                   <button type="button" className="segbtn" onClick={onRequestRevision} title="수정 요청">
                     <XCircle className="h-4 w-4" />
                   </button>
@@ -142,16 +137,6 @@ export function PdfJsKonvaViewerLoadingShell({
           <button className="btn" disabled title="저장">
             <Loader2 className="h-4 w-4 animate-spin" />
           </button>
-          {onToggleComments && (
-            <button
-              type="button"
-              className={`btn ${commentsOpen ? "active" : ""}`}
-              onClick={onToggleComments}
-              title="코멘트"
-            >
-              <Mail className="h-4 w-4" />
-            </button>
-          )}
         </div>
       </div>
       <div className="pdf-viewer-main flex-1 flex items-center justify-center">
@@ -168,12 +153,9 @@ export type PdfJsKonvaViewerProps = {
   reviewStatus?: string | null;
   fullscreen?: boolean;
   onFullscreenChange?: (enabled: boolean) => void;
-  onStartReview?: () => void;
-  onStopReview?: () => void;
+  onSetInProgress?: () => void;
   onRequestRevision?: () => void;
   onApprove?: () => void;
-  commentsOpen?: boolean;
-  onToggleComments?: () => void;
 };
 
 export default function PdfJsKonvaViewer({
@@ -183,12 +165,9 @@ export default function PdfJsKonvaViewer({
   reviewStatus = null,
   fullscreen = false,
   onFullscreenChange,
-  onStartReview,
-  onStopReview,
+  onSetInProgress,
   onRequestRevision,
   onApprove,
-  commentsOpen = false,
-  onToggleComments,
 }: PdfJsKonvaViewerProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1202,7 +1181,7 @@ export default function PdfJsKonvaViewer({
     applyPageNumber(String(cur + 1));
   }, [applyPageNumber]);
 
-  const handleSave = useCallback(async () => {
+  const handleSave = useCallback(async (): Promise<boolean> => {
     setSaving(true);
     try {
       // 1) Save annotations JSON (sidecar next to original PDF)
@@ -1222,12 +1201,28 @@ export default function PdfJsKonvaViewer({
         const text = await res.text().catch(() => "");
         throw new Error(text || `Bake failed (${res.status})`);
       }
+      return true;
     } catch (err: any) {
       alert(err?.message || "저장 실패");
+      return false;
     } finally {
       setSaving(false);
     }
-  }, []);
+  }, [fileId]);
+
+  /** 상태 변경 시 자동 저장(bake) 후 콜백 호출 */
+  const handleStatusChange = useCallback(
+    async (e: React.MouseEvent<HTMLButtonElement>) => {
+      const status = (e.currentTarget as HTMLButtonElement).getAttribute("data-status");
+      const ok = await handleSave();
+      if (ok) {
+        if (status === "in_progress") onSetInProgress?.();
+        else if (status === "request_revision") onRequestRevision?.();
+        else if (status === "approved") onApprove?.();
+      }
+    },
+    [handleSave, onSetInProgress, onRequestRevision, onApprove]
+  );
 
   // 키보드 단축키
   useEffect(() => {
@@ -1509,34 +1504,32 @@ export default function PdfJsKonvaViewer({
           </div>
         </div>
         <div className="group right">
-          {reviewStatus === "pending" && (
-            <button
-              className="btn"
-              onClick={onStartReview}
-              title="검토 시작"
-              aria-label="검토 시작"
-            >
-              <PlayCircle className="h-4 w-4" />
-            </button>
-          )}
-          {reviewStatus === "in_progress" && (
+          {(reviewStatus === "in_progress" ||
+            reviewStatus === "request_revision" ||
+            reviewStatus === "approved") && (
             <div className="btnbox" role="group" aria-label="검토 상태">
-              <button
-                type="button"
-                className="segbtn"
-                onClick={onStopReview}
-                title="검토 중지"
-                aria-label="검토 중지"
-              >
-                <Square className="h-4 w-4" />
-              </button>
-              {typeof onRequestRevision === "function" && (
+              {typeof onSetInProgress === "function" && (
                 <>
-                  <span className="segdiv" aria-hidden="true" />
                   <button
                     type="button"
                     className="segbtn"
-                    onClick={onRequestRevision}
+                    onClick={handleStatusChange}
+                    data-status="in_progress"
+                    title="검토필요"
+                    aria-label="검토필요"
+                  >
+                    <AlertCircle className="h-4 w-4" />
+                  </button>
+                  <span className="segdiv" aria-hidden="true" />
+                </>
+              )}
+              {typeof onRequestRevision === "function" && (
+                <>
+                  <button
+                    type="button"
+                    className="segbtn"
+                    onClick={handleStatusChange}
+                    data-status="request_revision"
                     title="수정 요청"
                     aria-label="수정 요청"
                   >
@@ -1550,7 +1543,8 @@ export default function PdfJsKonvaViewer({
                   <button
                     type="button"
                     className="segbtn"
-                    onClick={onApprove}
+                    onClick={handleStatusChange}
+                    data-status="approved"
                     title="검토 완료"
                     aria-label="검토 완료"
                   >
@@ -1588,17 +1582,6 @@ export default function PdfJsKonvaViewer({
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
           </button>
-          {typeof onToggleComments === "function" && (
-            <button
-              type="button"
-              className={`btn ${commentsOpen ? "active" : ""}`}
-              onClick={onToggleComments}
-              title="코멘트 보기/숨기기"
-              aria-label="코멘트"
-            >
-              <Mail className="h-4 w-4" />
-            </button>
-          )}
         </div>
       </div>
 

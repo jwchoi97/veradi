@@ -1172,6 +1172,9 @@ export class KonvaAnnotationManager {
   }
 
   private setSelection(nodes: Konva.Node[]) {
+    // Ensure viewport is synced before computing selection box/transformer so they appear at the correct position after scroll.
+    this.applyViewportSync();
+
     // If we are replacing selection, remove any previous UI-only highlight outlines that are not reused.
     try {
       const keep = new Set(nodes.map((n) => n?.id?.()).filter(Boolean));
@@ -1194,6 +1197,7 @@ export class KonvaAnnotationManager {
     if (!this.transformer) return;
     try {
       this.transformer.nodes(nodes);
+      this.transformer?.forceUpdate?.();
     } catch {
       /* ignore */
     }
@@ -2346,13 +2350,17 @@ export class KonvaAnnotationManager {
           this.setSelection(next);
         } else {
           // If the pointer is over a DOM-based highlight, allow selecting it (for delete)
+          this.applyViewportSync(); // Ensure viewOffset is current before using hit.rect
           const hit = this.stageRectContainsDomHighlight(pos);
           if (hit?.id && hit.rect) {
             if (!shift) this.clearSelection();
+            // hit.rect is in stage coords; uiLayer uses document coords, so convert.
+            const docX = hit.rect.x + this.viewOffset.x;
+            const docY = hit.rect.y + this.viewOffset.y;
             const outline = new Konva.Rect({
               id: hit.id,
-              x: hit.rect.x,
-              y: hit.rect.y,
+              x: docX,
+              y: docY,
               width: Math.max(1, hit.rect.width),
               height: Math.max(1, hit.rect.height),
               name: "hl-outline",
@@ -2689,6 +2697,7 @@ export class KonvaAnnotationManager {
         });
 
         // Also include DOM-based highlight rectangles (rectNorm) that intersect the marquee box.
+        this.applyViewportSync(); // Ensure viewOffset is current
         const outlineNodes: Konva.Node[] = [];
         try {
           const existingIds = new Set((additive ? this.selectedNodes : []).map((n) => n?.id?.()).filter(Boolean) as string[]);
@@ -2699,10 +2708,13 @@ export class KonvaAnnotationManager {
             const stageRect = this.domRectToStageRect(dr);
             if (!stageRect) continue;
             if (!Konva.Util.haveIntersection(rect, stageRect as any)) continue;
+            // stageRect is in stage coords; uiLayer uses document coords, so convert.
+            const docX = stageRect.x + this.viewOffset.x;
+            const docY = stageRect.y + this.viewOffset.y;
             const outline = new Konva.Rect({
               id,
-              x: stageRect.x,
-              y: stageRect.y,
+              x: docX,
+              y: docY,
               width: Math.max(1, stageRect.width),
               height: Math.max(1, stageRect.height),
               name: "hl-outline",

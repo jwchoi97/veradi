@@ -214,44 +214,42 @@ class Activity(Base):
     user = relationship("User", foreign_keys=[user_id])
 
 
-class Review(Base):
-    __tablename__ = "reviews"
+class ReviewSession(Base):
+    """유저별 검토 세션: file_asset_id + user_id 당 하나. baked PDF, annotations JSON은 MinIO에서 user별 분리 저장."""
+
+    __tablename__ = "review_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
 
-    # 검토 대상 파일
     file_asset_id = Column(
         Integer,
         ForeignKey("files.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
-        unique=True,  # 파일당 하나의 검토만
     )
 
-    # 검토 상태: "pending", "in_progress", "request_revision", "approved"
-    status = Column(String(32), nullable=False, default="pending", index=True)
-
-    # 검토자
-    reviewer_id = Column(
+    user_id = Column(
         Integer,
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
 
-    # 검토 시작 시각
-    started_at = Column(DateTime, nullable=True)
+    # 검토 상태: "in_progress"(검토필요), "request_revision", "approved"
+    status = Column(String(32), nullable=False, default="in_progress", index=True)
 
-    # 검토 완료 시각
+    started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
+    __table_args__ = (UniqueConstraint("file_asset_id", "user_id", name="uq_review_sessions_file_user"),)
+
     # Relationships
     file_asset = relationship("FileAsset", foreign_keys=[file_asset_id])
-    reviewer = relationship("User", foreign_keys=[reviewer_id])
-    comments = relationship("ReviewComment", back_populates="review", cascade="all, delete-orphan")
+    user = relationship("User", foreign_keys=[user_id])
+    comments = relationship("ReviewComment", back_populates="review_session", cascade="all, delete-orphan")
 
 
 class ReviewComment(Base):
@@ -259,15 +257,13 @@ class ReviewComment(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    # 검토
-    review_id = Column(
+    review_session_id = Column(
         Integer,
-        ForeignKey("reviews.id", ondelete="CASCADE"),
+        ForeignKey("review_sessions.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
 
-    # 코멘트 작성자
     author_id = Column(
         Integer,
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -294,7 +290,7 @@ class ReviewComment(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
     # Relationships
-    review = relationship("Review", back_populates="comments")
+    review_session = relationship("ReviewSession", back_populates="comments")
     author = relationship("User", foreign_keys=[author_id])
 
 

@@ -155,7 +155,8 @@ export async function uploadProjectFile(projectId: number, file: File, fileType:
 // Review 관련 인터페이스
 export interface ReviewComment {
   id: number;
-  review_id: number;
+  review_id?: number;
+  review_session_id?: number;
   author_id: number | null;
   author_name: string | null;
   comment_type: "text" | "handwriting" | "attachment";
@@ -182,6 +183,34 @@ export interface Review {
   comments: ReviewComment[];
 }
 
+export interface ReviewSessionOut {
+  id: number;
+  file_asset_id: number;
+  project_id: number | null;
+  file_name: string | null;
+  project_name: string | null;
+  project_year: string | null;
+  status: string;
+  reviewer_id: number | null;
+  reviewer_name: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  comments: ReviewComment[];
+}
+
+export interface FileReviewSessionsOut {
+  file_asset_id: number;
+  file_name: string | null;
+  project_id: number | null;
+  project_name: string | null;
+  project_year: string | null;
+  request_revision_count: number;
+  approved_count: number;
+  sessions: ReviewSessionOut[];
+}
+
 export interface ReviewCommentCreate {
   comment_type: "text" | "handwriting" | "attachment";
   text_content?: string | null;
@@ -196,7 +225,7 @@ export interface ReviewCommentUpdate {
 }
 
 export interface ReviewStatusUpdate {
-  status: "request_revision" | "approved";
+  status: "in_progress" | "request_revision" | "approved";
 }
 
 // --- User / Activity (MyPage / HomePage) ---
@@ -324,20 +353,43 @@ export async function stopReview(fileId: number): Promise<Review> {
   return res.data;
 }
 
-export async function getFileInlineUrl(fileId: number): Promise<{ url: string; expires_minutes: number }> {
-  const res = await api.get<{ url: string; expires_minutes: number }>(`/reviews/files/${fileId}/inline-url`);
+export async function getFileInlineUrl(
+  fileId: number,
+  options?: { variant?: "baked" | "original"; reviewerUserId?: number }
+): Promise<{ url: string; expires_minutes: number }> {
+  const params = new URLSearchParams();
+  if (options?.variant) params.set("variant", options.variant);
+  if (options?.reviewerUserId != null) params.set("reviewer_user_id", String(options.reviewerUserId));
+  const qs = params.toString();
+  const res = await api.get<{ url: string; expires_minutes: number }>(
+    `/reviews/files/${fileId}/inline-url${qs ? `?${qs}` : ""}`
+  );
+  return res.data;
+}
+
+export async function getFileReviewSessions(fileId: number): Promise<FileReviewSessionsOut> {
+  const res = await api.get<FileReviewSessionsOut>(`/reviews/files/${fileId}/sessions`);
+  return res.data;
+}
+
+export async function getFileReviewSummariesBulk(
+  fileIds: number[]
+): Promise<{ summaries: FileReviewSessionsOut[] }> {
+  const res = await api.post<{ summaries: FileReviewSessionsOut[] }>(`/reviews/files/summaries-bulk`, {
+    file_ids: fileIds,
+  });
   return res.data;
 }
 
 export async function getFileViewUrl(fileId: number): Promise<{ url: string; expires_minutes: number }> {
   const res = await api.get<{ url: string; expires_minutes: number }>(`/reviews/files/${fileId}/view-url`);
-  // baseURL과 결합하여 전체 URL 생성
-  // res.data.url이 /reviews/files/{id}/proxy 형식이므로 baseURL과 결합
-  const baseURL = api.defaults.baseURL || import.meta.env.VITE_API_BASE_URL || "/api";
-  // URL이 이미 /로 시작하므로 baseURL과 결합
-  const fullUrl = res.data.url.startsWith("http") 
-    ? res.data.url 
-    : `${baseURL}${res.data.url}`;
+  const path = res.data.url.startsWith("/") ? res.data.url : `/${res.data.url}`;
+  // PDF 뷰어는 fetch + X-User-Id 헤더 사용 → 크로스오리진 시 CORS preflight 실패.
+  // 브라우저 환경에서는 same-origin 경로(/api/...)로 Vite 프록시를 거치도록 함.
+  const fullUrl =
+    typeof window !== "undefined"
+      ? `${window.location.origin}/api${path}`
+      : `${api.defaults.baseURL || import.meta.env.VITE_API_BASE_URL || "/api"}${path}`;
   return { url: fullUrl, expires_minutes: res.data.expires_minutes };
 }
 
