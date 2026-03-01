@@ -1,5 +1,6 @@
 import type { Annotation } from "../model/types";
 import type { AnnotationStore, AnnotationsByPage } from "./AnnotationStore";
+import { resolveApiUrl } from "@/data/files/api";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
@@ -24,7 +25,7 @@ export class ServerAnnotationStore implements AnnotationStore {
   async load(params: { fileId: string; userId: string }): Promise<AnnotationsByPage> {
     const { fileId, userId } = params;
     try {
-      const res = await fetch(`/api/reviews/files/${fileId}/annotations`, {
+      const res = await fetch(resolveApiUrl(`/reviews/files/${fileId}/annotations`), {
         headers: { "X-User-Id": userId },
         credentials: "include",
       });
@@ -87,7 +88,7 @@ export class ServerAnnotationStore implements AnnotationStore {
     });
 
     // Backend defaults to a minimal response for performance.
-    const res = await fetch(`/api/reviews/files/${fileId}/annotations?return_full=0`, {
+    const res = await fetch(resolveApiUrl(`/reviews/files/${fileId}/annotations?return_full=0`), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

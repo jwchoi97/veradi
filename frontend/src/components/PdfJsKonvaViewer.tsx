@@ -7,6 +7,7 @@ import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import Konva from "konva";
 import { Maximize2, Minimize2, Save, Loader2, XCircle, CheckCircle, AlertCircle } from "lucide-react";
 import { getAuthedUser } from "@/auth";
+import { resolveApiUrl } from "@/data/files/api";
 import { KonvaAnnotationManager } from "@/pdfjs-viewer/main";
 import { attachTouchGestures } from "@/pdfjs-viewer/core/input/touchGestures";
 
@@ -1193,7 +1194,7 @@ export default function PdfJsKonvaViewer({
       const me = getAuthedUser();
       const headers: Record<string, string> = {};
       if (typeof me?.id === "number") headers["X-User-Id"] = String(me.id);
-      const res = await fetch(`/api/reviews/files/${fileId}/bake`, {
+      const res = await fetch(resolveApiUrl(`/reviews/files/${fileId}/bake`), {
         method: "POST",
         headers,
         credentials: "include",

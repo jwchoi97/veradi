@@ -1,12 +1,14 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { getAuthedUser } from "@/auth";
+import { resolveApiUrl } from "@/data/files/api";
 
 export async function saveAnnotatedPdf(params: {
   pdfDocument: PDFDocumentProxy;
   fileId: number;
-  uploadUrl?: string; // default: /api/pdf/save (frontend baseURL 기준)
+  uploadUrl?: string; // optional override (absolute URL or backend-relative path)
 }): Promise<{ object_key: string }> {
-  const { pdfDocument, fileId, uploadUrl = "/api/pdf/save" } = params;
+  const { pdfDocument, fileId, uploadUrl } = params;
+  const resolvedUploadUrl = resolveApiUrl(uploadUrl || "/pdf/save");
 
   // 1) AnnotationStorage 포함하여 PDF 저장 (벡터 기반 PDF 수정본 생성)
   const annotationStorage = (pdfDocument as any).annotationStorage;
@@ -26,7 +28,7 @@ export async function saveAnnotatedPdf(params: {
   const headers: Record<string, string> = {};
   if (typeof me?.id === "number") headers["X-User-Id"] = String(me.id);
 
-  const res = await fetch(uploadUrl, {
+  const res = await fetch(resolvedUploadUrl, {
     method: "POST",
     body: fd,
     headers,

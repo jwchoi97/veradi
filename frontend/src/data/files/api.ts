@@ -3,10 +3,23 @@
 import axios from "axios";
 import { getAuthedUser } from "@/auth";
 
+const API_BASE_URL_RAW = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
+const API_BASE_URL = API_BASE_URL_RAW.trim().replace(/\/+$/, "");
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL,
+  // Prefer explicit backend URL in production; fallback to same-origin /api proxy.
+  baseURL: API_BASE_URL || "/api",
   withCredentials: true,
 });
+
+export function resolveApiUrl(pathOrUrl: string): string {
+  const raw = (pathOrUrl || "").trim();
+  if (!raw) return API_BASE_URL || "/api";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  const path = raw.startsWith("/") ? raw : `/${raw}`;
+  if (API_BASE_URL) return `${API_BASE_URL}${path}`;
+  return `/api${path}`;
+}
 
 /**
  * Attach X-User-Id automatically (best-effort).
@@ -383,14 +396,7 @@ export async function getFileReviewSummariesBulk(
 
 export async function getFileViewUrl(fileId: number): Promise<{ url: string; expires_minutes: number }> {
   const res = await api.get<{ url: string; expires_minutes: number }>(`/reviews/files/${fileId}/view-url`);
-  const path = res.data.url.startsWith("/") ? res.data.url : `/${res.data.url}`;
-  // PDF 뷰어는 fetch + X-User-Id 헤더 사용 → 크로스오리진 시 CORS preflight 실패.
-  // 브라우저 환경에서는 same-origin 경로(/api/...)로 Vite 프록시를 거치도록 함.
-  const fullUrl =
-    typeof window !== "undefined"
-      ? `${window.location.origin}/api${path}`
-      : `${api.defaults.baseURL || import.meta.env.VITE_API_BASE_URL || "/api"}${path}`;
-  return { url: fullUrl, expires_minutes: res.data.expires_minutes };
+  return { url: resolveApiUrl(res.data.url), expires_minutes: res.data.expires_minutes };
 }
 
 export async function getProjectIndividualItemsCount(projectId: number): Promise<{ project_id: number; individual_items_count: number }> {
