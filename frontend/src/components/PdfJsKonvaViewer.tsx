@@ -3,15 +3,16 @@ import * as pdfjsLib from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { EventBus, PDFLinkService, PDFViewer } from "pdfjs-dist/web/pdf_viewer.mjs";
 import "pdfjs-dist/web/pdf_viewer.css";
+import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import Konva from "konva";
 import { Maximize2, Minimize2, Save, Loader2, XCircle, CheckCircle, AlertCircle } from "lucide-react";
 import { getAuthedUser } from "@/auth";
 import { KonvaAnnotationManager } from "@/pdfjs-viewer/main";
 import { attachTouchGestures } from "@/pdfjs-viewer/core/input/touchGestures";
 
-// Worker 설정
+// Worker 설정: ?url로 Vite가 worker를 정적 에셋으로 번들링하도록 함 (public 폴더 직접 참조 시 오류 방지)
 if (typeof window !== "undefined") {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `/pdf.worker.min.mjs`;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
   Konva.pixelRatio = Math.max(1, (window.devicePixelRatio || 1));
 }
 
@@ -1234,12 +1235,7 @@ export default function PdfJsKonvaViewer({
 
       const isMod = e.ctrlKey || e.metaKey;
       
-      // 전체화면 닫기
-      if (fullscreen && (e.key === "q" || e.key === "Q")) {
-        e.preventDefault();
-        onFullscreenChange?.(false);
-        return;
-      }
+      // 전체화면 닫기: ESC (브라우저 기본 동작, 별도 처리 불필요)
 
       // Page Down: 다음 장 (숫자 옆 다음 버튼과 동일)
       if (e.key === "PageDown") {
@@ -1273,8 +1269,8 @@ export default function PdfJsKonvaViewer({
         return;
       }
 
-      // 모드 전환
-      if (e.key === "Escape") {
+      // 모드 전환 (Q: 선택 모드, ESC: 전체화면 닫기 - 브라우저 기본)
+      if (e.key === "q" || e.key === "Q") {
         setCurrentMode("none");
         try { annotationManagerRef.current?.setMode?.("none" as any); } catch { /* ignore */ }
       } else if (e.key === "i" || e.key === "I") {

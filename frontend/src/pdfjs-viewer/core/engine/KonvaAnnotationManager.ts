@@ -246,13 +246,11 @@ export class KonvaAnnotationManager {
 
     this.viewOffset = { x, y };
 
-    // Place the stage container at the visible "window" inside the full document container.
-    // This avoids huge absolute-positioned elements inflating scroll ranges.
-    // Clamp position to container bounds so the stage never overlaps the toolbar (which is above the container).
-    const containerW = cr.width || 1;
-    const containerH = cr.height || 1;
-    const stageLeft = Math.max(0, Math.min(x, containerW - vw));
-    const stageTop = Math.max(0, Math.min(y, containerH - vh));
+    // Place the stage container at the same document-space offset as the camera.
+    // Using container-size clamp here can freeze stageLeft at 0 in x-scroll layouts,
+    // which causes overlay/PDF drift after horizontal panning.
+    const stageLeft = x;
+    const stageTop = y;
     this.stageContainerEl.style.left = `${stageLeft}px`;
     this.stageContainerEl.style.top = `${stageTop}px`;
     this.stageContainerEl.style.width = `${vw}px`;
@@ -465,15 +463,23 @@ export class KonvaAnnotationManager {
     this.bindStageEvents();
 
     // Keep stage in sync with scroll/resize so the canvas stays viewport-sized.
+    // Note: scroll events do NOT bubble, so we must listen on each scroll container directly.
+    // window scroll catches document scroll; x-scroll div (pdf-viewer-xscroll) needs its own listener.
     try {
       const onViewportChange = () => this.scheduleViewportSync();
       window.addEventListener("scroll", onViewportChange, { passive: true, capture: true });
       window.addEventListener("resize", onViewportChange, { passive: true });
       const ro = new ResizeObserver(onViewportChange);
       ro.observe(this.container);
+      const spX = this.getScrollParent("x");
+      const spY = this.getScrollParent("y");
+      if (spX) spX.addEventListener("scroll", onViewportChange, { passive: true });
+      if (spY && spY !== spX) spY.addEventListener("scroll", onViewportChange, { passive: true });
       this.viewportCleanupFns.push(() => window.removeEventListener("scroll", onViewportChange as any, true as any));
       this.viewportCleanupFns.push(() => window.removeEventListener("resize", onViewportChange as any));
       this.viewportCleanupFns.push(() => ro.disconnect());
+      if (spX) this.viewportCleanupFns.push(() => spX.removeEventListener("scroll", onViewportChange as any));
+      if (spY && spY !== spX) this.viewportCleanupFns.push(() => spY.removeEventListener("scroll", onViewportChange as any));
     } catch {
       /* ignore */
     }

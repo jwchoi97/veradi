@@ -74,20 +74,7 @@ export default function ReviewPage() {
     };
   }, [fileUrl]);
 
-  // 전체화면 닫기 단축키 (ESC는 iframe에서 선택모드와 충돌하므로 사용하지 않음)
-  useEffect(() => {
-    const handleCloseKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || (t as any).isContentEditable)) return;
-      if (!isFullscreen) return;
-      if (e.key === "q" || e.key === "Q") {
-        e.preventDefault();
-        setIsFullscreen(false);
-      }
-    };
-    window.addEventListener("keydown", handleCloseKey);
-    return () => window.removeEventListener("keydown", handleCloseKey);
-  }, [isFullscreen]);
+  // 전체화면 닫기: ESC는 브라우저 기본 동작 → fullscreenchange로 동기화됨
 
   // NOTE: iframe 기반 pdfjs-viewer 경로는 제거됨.
 
