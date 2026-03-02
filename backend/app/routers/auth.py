@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import secrets
+import re
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import DataError, DBAPIError
 
 from ..mariadb.database import SessionLocal
 from ..mariadb.models import User, UserRole, Department, UserDepartment, PasswordChangeRequest
@@ -27,7 +29,7 @@ from ..schemas import (
     PasswordChangeRequestListOut,
 )
 from ..mariadb.models import FileAsset, Project, Activity
-from sqlalchemy import func, extract
+from sqlalchemy import func, extract, text
 from datetime import datetime, timezone
 from ..security import hash_password, verify_password
 from ..minio.service import upload_stream, presign_download_url, delete_object
@@ -95,13 +97,100 @@ def _resolve_departments_from_signup(payload: SignupRequest) -> list[Department]
 
 
 def _set_user_departments(db: Session, user: User, deps: list[Department]) -> None:
-    # hard replace links
-    db.query(UserDepartment).filter(UserDepartment.user_id == user.id).delete()
-    db.add_all([UserDepartment(user_id=user.id, department=d) for d in deps])
+    if not deps:
+        raise HTTPException(status_code=400, detail="At least one department required")
+
+    def _enum_values(table_name: str, column_name: str) -> set[str]:
+        """
+        Read MariaDB/MySQL ENUM domain from INFORMATION_SCHEMA.
+        Returns empty set when unavailable so caller can skip strict checks.
+        """
+        try:
+            row = db.execute(
+                text(
+                    """
+                    SELECT COLUMN_TYPE
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = :table_name
+                      AND COLUMN_NAME = :column_name
+                    LIMIT 1
+                    """
+                ),
+                {"table_name": table_name, "column_name": column_name},
+            ).first()
+            raw = str(row[0]) if row and row[0] else ""
+            s = raw.strip()
+            if not s.lower().startswith("enum(") or not s.endswith(")"):
+                return set()
+            body = s[5:-1]
+            vals = re.findall(r"'((?:[^'\\\\]|\\\\.)*)'", body)
+            return {v for v in vals if v}
+        except Exception:
+            return set()
+
+    def _department_enum_sql() -> str:
+        values = [d.value for d in Department]
+        return "ENUM(" + ",".join(f"'{v}'" for v in values) + ")"
+
+    primary = deps[0]
+    user_enum = _enum_values("users", "department")
+    if user_enum and primary.value not in user_enum:
+        # Explicit message instead of generic 500/DataError.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Department '{primary.value}' is not supported by current DB schema. "
+                "Please run latest Alembic migrations."
+            ),
+        )
 
     # keep legacy single as "primary" (first)
-    user.department = deps[0]
+    user.department = primary
     db.add(user)
+
+    # Multi departments:
+    # If DB enum is outdated, fail explicitly instead of silently dropping selections.
+    db.query(UserDepartment).filter(UserDepartment.user_id == user.id).delete()
+    link_enum = _enum_values("user_departments", "department")
+    if link_enum:
+        unsupported = [d.value for d in deps if d.value not in link_enum]
+        if unsupported:
+            # Best effort self-heal for DBs that still have old ENUM domain.
+            try:
+                op_enum_sql = _department_enum_sql()
+                db.execute(text(f"ALTER TABLE user_departments MODIFY department {op_enum_sql} NOT NULL"))
+                link_enum = _enum_values("user_departments", "department")
+                unsupported = [d.value for d in deps if d.value not in link_enum]
+            except Exception:
+                # Fall back to explicit API error below.
+                pass
+
+            if unsupported:
+                unsupported_str = ", ".join(unsupported)
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Departments [{unsupported_str}] are not supported by current user_departments schema. "
+                        "Please run latest Alembic migrations."
+                    ),
+                )
+    db.add_all([UserDepartment(user_id=user.id, department=d) for d in deps])
+    try:
+        # Surface enum/schema mismatch immediately as a clean HTTP 400.
+        db.flush()
+    except (DataError, DBAPIError) as e:
+        db.rollback()
+        msg = str(getattr(e, "orig", e))
+        if "department" in msg.lower() or "data truncated" in msg.lower():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Selected departments are not supported by current DB schema. "
+                    "Please run latest Alembic migrations."
+                ),
+            )
+        raise
 
 
 def _user_out(u: User) -> UserOut:
@@ -242,22 +331,27 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
 
     deps = _resolve_departments_from_signup(payload)
 
-    user = User(
-        username=payload.username,
-        name=payload.name,
-        password_hash=hash_password(payload.password),
-        role=UserRole.PENDING,
-        department=deps[0],  # legacy primary
-        phone_number=phone_digits,
-        phone_verified=False,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    _set_user_departments(db, user, deps)
-    db.commit()
-    db.refresh(user)
+    try:
+        user = User(
+            username=payload.username,
+            name=payload.name,
+            password_hash=hash_password(payload.password),
+            role=UserRole.PENDING,
+            department=deps[0],  # legacy primary
+            phone_number=phone_digits,
+            phone_verified=False,
+        )
+        db.add(user)
+        db.flush()  # assign user.id without committing partial state
+        _set_user_departments(db, user, deps)
+        db.commit()
+        db.refresh(user)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
 
     return _user_out(user)
 

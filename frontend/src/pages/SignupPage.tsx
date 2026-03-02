@@ -4,6 +4,7 @@ import React, { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { Department } from "@/data/departments";
 import { DEPARTMENTS, prettyDepartment } from "@/data/departments";
+import { resolveApiUrl } from "@/data/files/api";
 
 type SignupPayloadCompat = {
   username: string;
@@ -14,6 +15,11 @@ type SignupPayloadCompat = {
   password: string;
   password_confirm: string;
 };
+
+function isNetworkOrCorsError(err: unknown): boolean {
+  const msg = String((err as any)?.message ?? "");
+  return /failed to fetch|networkerror|network error|cors/i.test(msg);
+}
 
 const departmentOptions: { value: Department; label: string }[] = DEPARTMENTS.map((d) => ({
   value: d,
@@ -26,10 +32,6 @@ function digitsOnly(v: string): string {
 
 function trimOrEmpty(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
-}
-
-function uniqDepartments(list: Department[]): Department[] {
-  return Array.from(new Set(list));
 }
 
 export default function SignupPage() {
@@ -82,13 +84,12 @@ export default function SignupPage() {
     setError(null);
     if (!canSubmit) return;
 
-    const uniq = uniqDepartments(departments);
-
     const payload: SignupPayloadCompat = {
       username: trimOrEmpty(username),
       name: trimOrEmpty(name),
-      departments: uniq,
-      department: uniq[0], // legacy fallback
+      // Keep the selected order as-is; backend validates/normalizes.
+      departments,
+      department: departments[0], // legacy fallback
       phone_number: phoneDigits,
       password: pw,
       password_confirm: pw2,
@@ -96,14 +97,31 @@ export default function SignupPage() {
 
     try {
       setSubmitting(true);
-      const baseUrl = import.meta.env.VITE_API_BASE_URL;
-      if (!baseUrl) throw new Error("VITE_API_BASE_URL is not set");
+      const primaryUrl = resolveApiUrl("/auth/signup");
+      const fallbackUrl = "/api/auth/signup";
+      const candidates = Array.from(new Set([primaryUrl, fallbackUrl]));
+      let res: Response | null = null;
+      let lastError: unknown = null;
 
-      const res = await fetch(`${baseUrl}/auth/signup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      for (const url of candidates) {
+        try {
+          res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          break;
+        } catch (e) {
+          lastError = e;
+          // If direct API host is blocked by CORS/network, try same-origin proxy.
+          if (isNetworkOrCorsError(e)) continue;
+          throw e;
+        }
+      }
+
+      if (!res) {
+        throw (lastError instanceof Error ? lastError : new Error("Signup request failed"));
+      }
 
       if (!res.ok) {
         let msg = `Signup failed (HTTP ${res.status})`;
@@ -120,7 +138,12 @@ export default function SignupPage() {
 
       nav("/login", { replace: true, state: { signupSuccess: true } });
     } catch (err: any) {
-      setError(err?.message ?? "Signup failed");
+      const msg = String(err?.message ?? "Signup failed");
+      if (/failed to fetch/i.test(msg)) {
+        setError("네트워크/CORS 오류로 가입 요청에 실패했습니다. 잠시 후 다시 시도하거나 관리자에게 문의하세요.");
+      } else {
+        setError(msg);
+      }
     } finally {
       setSubmitting(false);
     }

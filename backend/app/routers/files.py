@@ -169,6 +169,7 @@ async def upload_project_file(
     project_id: int,
     file: UploadFile = File(...),
     file_type: str = Form(...),
+    set_index: int | None = Form(default=None),
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
@@ -192,6 +193,13 @@ async def upload_project_file(
         db.refresh(project)
 
     original_name = file.filename or "file"
+    if (file_type or "").strip() == "개별문항":
+        if set_index is None or set_index < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="개별문항 업로드 시 set_index(1 이상)가 필요합니다.",
+            )
+    # 개별문항도 문제지/해설지/정오표와 같은 레벨: projects/.../files/개별문항/
     object_key = build_file_key(
         project_slug=project.slug,
         deadline=getattr(project, "deadline", None),
@@ -219,7 +227,8 @@ async def upload_project_file(
         mime_type=file.content_type,
         size=None,
         file_type=file_type,
-        uploaded_by_user_id=user.id,  # 누가 업로드했는지 기록
+        set_index=set_index if (file_type or "").strip() == "개별문항" else None,
+        uploaded_by_user_id=user.id,
     )
     db.add(asset)
     db.commit()

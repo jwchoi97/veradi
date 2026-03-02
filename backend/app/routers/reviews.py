@@ -772,8 +772,8 @@ def get_file_review(
     if not file_asset:
         raise HTTPException(status_code=404, detail="File not found")
 
-    if file_asset.file_type not in ["문제지", "해설지", "정오표"]:
-        raise HTTPException(status_code=400, detail="Only content files can be reviewed")
+    if file_asset.file_type not in ["문제지", "해설지", "정오표", "개별문항"]:
+        raise HTTPException(status_code=400, detail="Only content or individual-question files can be reviewed")
 
     if session_id is not None:
         session = db.query(ReviewSession).filter(
@@ -806,6 +806,71 @@ def get_file_review(
         .all()
     )
     return _session_to_review_out(session, comments)
+
+
+@router.get("/individual-question-files", response_model=list[ReviewOut])
+def list_individual_question_files_for_review(
+    project_id: int | None = None,
+    status: str | None = None,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """검토 가능한 개별 문항 업로드 PDF 목록. 프로젝트별로 검토 (콘텐츠 검토와 동일 컨셉)."""
+    user = get_current_user(db, x_user_id)
+
+    query = (
+        db.query(FileAsset)
+        .filter(FileAsset.file_type == "개별문항")
+        .filter(FileAsset.original_name.ilike("%.pdf"))
+    )
+    if project_id is not None:
+        query = query.filter(FileAsset.project_id == project_id)
+    files = query.order_by(FileAsset.created_at.desc()).all()
+
+    session_by_file = {
+        rs.file_asset_id: rs
+        for rs in db.query(ReviewSession)
+        .filter(
+            ReviewSession.file_asset_id.in_([f.id for f in files]),
+            ReviewSession.user_id == user.id,
+        )
+        .all()
+    }
+
+    result = []
+    for file_asset in files:
+        session = session_by_file.get(file_asset.id)
+        if session:
+            st = session.status
+        else:
+            st = "in_progress"
+
+        if status and st != status:
+            continue
+
+        if session:
+            result.append(_session_to_review_out(session, comments=[]))
+        else:
+            project = file_asset.project if file_asset else None
+            result.append(
+                ReviewOut(
+                    id=0,
+                    file_asset_id=file_asset.id,
+                    project_id=file_asset.project_id if file_asset else None,
+                    file_name=file_asset.original_name if file_asset else None,
+                    project_name=project.name if project else None,
+                    project_year=project.year if project else None,
+                    status="in_progress",
+                    reviewer_id=None,
+                    reviewer_name=None,
+                    started_at=None,
+                    completed_at=None,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                    comments=[],
+                )
+            )
+    return result
 
 
 @router.get("/content-files", response_model=list[ReviewOut])

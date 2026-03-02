@@ -1383,7 +1383,7 @@ export default function PdfJsKonvaViewer({
           <button
             className={`btn ${currentMode === "none" ? "active" : ""}`}
             onClick={() => setCurrentMode("none")}
-            title="선택/이동(ESC)"
+            title="선택/이동(Q)"
           >
             🖐
           </button>
@@ -1555,7 +1555,7 @@ export default function PdfJsKonvaViewer({
             <button
               className="btn"
               onClick={() => onFullscreenChange?.(false)}
-              title="전체화면 닫기 (Q)"
+              title="전체화면 닫기 (ESC)"
               aria-label="전체화면 닫기"
             >
               <Minimize2 className="h-4 w-4" />

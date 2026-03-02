@@ -30,6 +30,7 @@ class FileOut(BaseModel):
     size: Optional[int] = None
     created_at: datetime
     file_type: Optional[str] = None
+    set_index: Optional[int] = None  # 개별문항: 1세트 = set_index당 PDF+HWP
     uploaded_by_user_id: Optional[int] = None  # 누가 업로드했는지 기록
 
     class Config:

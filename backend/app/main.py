@@ -13,21 +13,51 @@ models.Base.metadata.create_all(bind=engine)
 def get_cors_origins() -> list[str]:
     raw = os.getenv("CORS_ORIGINS", "")
     origins = [o.strip() for o in raw.split(",") if o.strip()]
+    # Always keep local dev origins.
+    defaults = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+    # Production frontend origins (explicit allow-list in addition to regex).
+    prod_defaults = [
+        "https://veradi.kr",
+        "https://www.veradi.kr",
+    ]
     if not origins:
-        # 개발용 기본값: Vite dev(5173), localhost/127.0.0.1
-        origins = [
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-        ]
+        origins = defaults + prod_defaults
+    else:
+        merged = origins + defaults + prod_defaults
+        # Deduplicate while preserving order.
+        seen = set()
+        deduped: list[str] = []
+        for o in merged:
+            if o in seen:
+                continue
+            seen.add(o)
+            deduped.append(o)
+        origins = deduped
     return origins
+
+
+def get_cors_origin_regex() -> str | None:
+    """
+    Optional regex allow-list for wildcard subdomains.
+    Useful in production where frontend domains vary by subdomain.
+    """
+    raw = (os.getenv("CORS_ORIGIN_REGEX", "") or "").strip()
+    if raw:
+        return raw
+    # Safe default for production domains used by this service.
+    return r"^https:\/\/([a-z0-9-]+\.)?veradi\.kr$"
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
+    allow_origin_regex=get_cors_origin_regex(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

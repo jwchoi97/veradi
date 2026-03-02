@@ -153,6 +153,9 @@ class FileAsset(Base):
     size = Column(Integer, nullable=True)
     file_type = Column(String(32), nullable=True)
 
+    # 개별문항 전용: 1세트 = PDF 1개 + HWP 1개. set_index=1,2,... 로 같은 세트 묶음.
+    set_index = Column(Integer, nullable=True, index=True)
+
     # 누가 업로드했는지 기록 (기여도 평가를 위해)
     uploaded_by_user_id = Column(
         Integer,

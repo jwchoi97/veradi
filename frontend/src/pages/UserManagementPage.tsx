@@ -56,6 +56,21 @@ const DEPARTMENT_OPTIONS = [
 
 type TabId = "all" | "pending" | "password";
 
+const ROLE_PRIORITY: Record<AdminUser["role"], number> = {
+  ADMIN: 0,
+  LEAD: 1,
+  MEMBER: 2,
+  PENDING: 3,
+};
+
+function sortUsersByRolePriority(list: AdminUser[]): AdminUser[] {
+  return [...list].sort((a, b) => {
+    const roleDiff = (ROLE_PRIORITY[a.role] ?? Number.MAX_SAFE_INTEGER) - (ROLE_PRIORITY[b.role] ?? Number.MAX_SAFE_INTEGER);
+    if (roleDiff !== 0) return roleDiff;
+    return a.id - b.id;
+  });
+}
+
 export default function UserManagementPage() {
   const me = getAuthedUser();
   const adminId = me?.id ?? null;
@@ -83,7 +98,7 @@ export default function UserManagementPage() {
         department: filterDepartment ?? undefined,
         role: filterRole ?? undefined,
       });
-      setUsers(list);
+      setUsers(sortUsersByRolePriority(list));
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : "Failed to load users");
     } finally {
@@ -129,7 +144,7 @@ export default function UserManagementPage() {
     setUpdatingId(u.id);
     try {
       const updated = await updateUser(adminId, u.id, { role: role as AdminUser["role"] });
-      setUsers((prev) => prev.map((uu) => (uu.id === u.id ? updated : uu)));
+      setUsers((prev) => sortUsersByRolePriority(prev.map((uu) => (uu.id === u.id ? updated : uu))));
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : "역할 변경에 실패했습니다.");
     } finally {

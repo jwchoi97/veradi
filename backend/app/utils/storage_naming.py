@@ -89,6 +89,7 @@ def build_project_slug(name: str, year: Optional[str], subject: Optional[str], p
 def build_file_key(project_slug: str, deadline: Optional[datetime], file_type: str, original_name: str) -> str:
     """
     Build a human-readable object key for MinIO.
+    콘텐츠(문제지/해설지/정오표)와 개별문항 모두 projects/.../files/{file_type}/ 아래에 저장.
     """
     safe_name = sanitize_filename(original_name)
     deadline_part = deadline.strftime("%Y%m%d") if deadline else "no-deadline"

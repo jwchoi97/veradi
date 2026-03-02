@@ -1,4 +1,5 @@
 // FILE: src/data/adminUsersApi.ts
+import { resolveApiUrl } from "@/data/files/api";
 // Matches backend routers/auth.py paths:
 // - GET  /auth/pending
 // - GET  /auth/users (admin, optional department, role)
@@ -57,9 +58,10 @@ export type PendingPasswordChangeRequest = {
 };
 
 function getBaseUrl(): string {
-  const baseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
-  if (!baseUrl) throw new Error("VITE_API_BASE_URL is not set");
-  return baseUrl;
+  const baseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
+  const normalized = baseUrl.trim().replace(/\/+$/, "");
+  // Keep working in production even when env is missing, if same-origin /api proxy exists.
+  return normalized || "/api";
 }
 
 async function readErrorMessage(res: Response): Promise<string> {
@@ -195,7 +197,7 @@ export async function updateUser(
   userId: number,
   payload: AdminUserUpdatePayload
 ): Promise<AdminUser> {
-  const res = await fetch(`${getBaseUrl()}/auth/users/${userId}`, {
+  const res = await fetch(resolveApiUrl(`/auth/users/${userId}`), {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",

@@ -196,13 +196,22 @@ def update_project(
     return project
 
 
+def _file_ext_lower(name: str | None) -> str:
+    if not name:
+        return ""
+    i = (name or "").rfind(".")
+    if i < 0:
+        return ""
+    return (name or "")[i + 1 :].lower()
+
+
 @router.get("/{project_id}/individual-items/count")
 def get_project_individual_items_count(
     project_id: int,
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
-    """프로젝트별 개별 문항 개수를 반환합니다."""
+    """프로젝트별 개별 문항 개수. 1세트 = PDF 1개 + HWP 1개가 모두 올라온 set_index 개수."""
     user = get_current_user(db, x_user_id)
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
@@ -210,15 +219,26 @@ def get_project_individual_items_count(
 
     ensure_can_manage_project(user, project)
 
-    # file_type이 "개별문항"인 파일들의 개수를 세기
-    count = (
-        db.query(func.count(FileAsset.id))
+    files = (
+        db.query(FileAsset)
         .filter(
             FileAsset.project_id == project_id,
-            FileAsset.file_type == "개별문항"
+            FileAsset.file_type == "개별문항",
+            FileAsset.set_index.isnot(None),
         )
-        .scalar()
+        .all()
     )
 
-    return {"project_id": project_id, "individual_items_count": count or 0}
+    by_set: dict[int, set[str]] = {}
+    for f in files:
+        idx = f.set_index
+        if idx is None:
+            continue
+        ext = _file_ext_lower(f.original_name)
+        if ext not in ("pdf", "hwp"):
+            continue
+        by_set.setdefault(idx, set()).add(ext)
+
+    count = sum(1 for exts in by_set.values() if "pdf" in exts and "hwp" in exts)
+    return {"project_id": project_id, "individual_items_count": count}
 

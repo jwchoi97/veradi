@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Outlet, NavLink, useLocation } from "react-router-dom";
-import { UploadCloud, FileText, FolderKanban, Users, User, Home, CheckCircle } from "lucide-react";
+import { UploadCloud, FileText, FolderKanban, Users, User, Home, CheckCircle, ClipboardCheck } from "lucide-react";
 import TopBar from "./TopBar";
 import { ROUTE_MODULES } from "@/router/routes";
 import { getAuthedUser } from "@/auth";
@@ -118,6 +118,18 @@ export default function AppLayout() {
               개별 문항 업로드
             </NavLink>
             <NavLink
+              to="/reviews/individual"
+              end
+              className={({ isActive }: NavState) =>
+                `side-link side-link-sub ${isActive ? "active" : ""}`
+              }
+            >
+              <span className="side-link-icon">
+                <ClipboardCheck className="h-4 w-4" />
+              </span>
+              개별 문항 검토
+            </NavLink>
+            <NavLink
               to="/erp/content/mock"
               className={({ isActive }: NavState) =>
                 `side-link side-link-sub ${isActive ? "active" : ""}`
@@ -130,6 +142,7 @@ export default function AppLayout() {
             </NavLink>
             <NavLink
               to="/reviews"
+              end
               className={({ isActive }: NavState) =>
                 `side-link side-link-sub ${isActive ? "active" : ""}`
               }
@@ -173,7 +186,7 @@ export default function AppLayout() {
           </nav>
         </aside>
 
-        <main className={`main ${location.pathname.startsWith("/reviews") ? "main-noscroll" : ""}`}>
+        <main className={`main ${(location.pathname.startsWith("/reviews")) ? "main-noscroll" : ""}`}>
           <Outlet />
         </main>
       </div>

@@ -122,7 +122,9 @@ export interface FileAsset {
   size?: number | null;
   created_at: string;
   file_type?: string | null;
-  uploaded_by_user_id?: number | null; // 누가 업로드했는지 기록
+  /** 개별문항 전용: 1세트 = set_index당 PDF 1개 + HWP 1개 */
+  set_index?: number | null;
+  uploaded_by_user_id?: number | null;
 }
 
 //////////////////////////
@@ -155,10 +157,18 @@ export async function deleteProjectFile(projectId: number, fileId: number): Prom
   await api.delete(`/projects/${projectId}/files/${fileId}`);
 }
 
-export async function uploadProjectFile(projectId: number, file: File, fileType: string): Promise<FileAsset> {
+export async function uploadProjectFile(
+  projectId: number,
+  file: File,
+  fileType: string,
+  options?: { setIndex?: number }
+): Promise<FileAsset> {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("file_type", fileType);
+  if (fileType === "개별문항" && options?.setIndex != null && options.setIndex >= 1) {
+    formData.append("set_index", String(options.setIndex));
+  }
   const res = await api.post<FileAsset>(`/projects/${projectId}/files`, formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
@@ -278,6 +288,11 @@ export interface ActivityItem {
 // Review 관련 API
 export async function listContentFilesForReview(): Promise<Review[]> {
   const res = await api.get<Review[]>("/reviews/content-files");
+  return res.data;
+}
+
+export async function listIndividualQuestionFilesForReview(): Promise<Review[]> {
+  const res = await api.get<Review[]>("/reviews/individual-question-files");
   return res.data;
 }
 
