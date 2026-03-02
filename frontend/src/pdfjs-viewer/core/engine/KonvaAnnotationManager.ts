@@ -613,9 +613,9 @@ export class KonvaAnnotationManager {
         mode === "highlight" ? "text" : mode === "none" ? "default" : mode === "eraser" ? "cell" : "crosshair";
       // Touch gestures (scroll/pinch) are handled at the app layer; keep native actions disabled here.
       this.stageContainerEl.style.touchAction = "none";
-      // Keep pointer-events: auto in all modes so touchGestures receives touch (pan/pinch).
-      // Pen-only highlight selection uses document-level handlers; finger uses native selection when over text layer.
-      this.stageContainerEl.style.pointerEvents = "auto";
+      // In highlight mode: pointer-events none so clicks pass through to text layer for native text selection.
+      // In other modes: auto so touchGestures receives touch (pan/pinch) and Konva handles interactions.
+      this.stageContainerEl.style.pointerEvents = mode === "highlight" ? "none" : "auto";
     }
     try {
       this.container.style.cursor = mode === "highlight" ? "text" : "";
