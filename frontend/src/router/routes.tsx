@@ -7,6 +7,7 @@ import IndividualItemUploadPage from "@/pages/IndividualItemUploadPage";
 import AdminDashboardPage from "@/pages/AdminDashboardPage";
 import ProjectManagementPage from "@/pages/ProjectManagementPage";
 import UserManagementPage from "@/pages/UserManagementPage";
+import LaborCostManagementPage from "@/pages/LaborCostManagementPage";
 import MyPage from "@/pages/MyPage";
 import LoginPage from "@/pages/LoginPage";
 import HomePage from "@/pages/HomePage";
@@ -56,12 +57,19 @@ export const adminUserModule: RouteModule = {
   routes: [{ index: true, element: <UserManagementPage /> }],
 };
 
+export const adminLaborModule: RouteModule = {
+  base: "/erp/admin/labor",
+  label: "인건비 관리",
+  routes: [{ index: true, element: <LaborCostManagementPage /> }],
+};
+
 export const ROUTE_MODULES: RouteModule[] = [
   contentMockModule,
   contentIndividualModule,
   adminDashboardModule,
   adminProjectModule,
   adminUserModule,
+  adminLaborModule,
 ];
 
 function RequireAuth() {

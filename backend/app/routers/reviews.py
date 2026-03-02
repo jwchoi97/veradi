@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
@@ -451,6 +451,83 @@ def _build_baked_pdf_bytes(*, original_pdf_bytes: bytes, annotations: list[dict]
                 # unknown types are ignored
 
         # garbage=0, deflate=False: 원본 PDF 구조/폰트 렌더링을 최대한 보존하여 편집화면과 동일하게 표시
+        buf = io.BytesIO()
+        doc.save(buf, garbage=0, deflate=False)
+        return buf.getvalue()
+    finally:
+        doc.close()
+
+
+def _build_baked_pdf_bytes_overlay(
+    *, original_pdf_bytes: bytes, page_pngs: dict[int, bytes]
+) -> bytes:
+    """
+    Bake by overlaying full-page transparent PNGs (legacy). Prefer overlay_bbox when possible.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except Exception as e:
+        raise RuntimeError("PyMuPDF (fitz) is required for baking PDFs. Please install PyMuPDF.") from e
+
+    doc = fitz.open(stream=original_pdf_bytes, filetype="pdf")
+    try:
+        for page_num in sorted(page_pngs.keys()):
+            if page_num <= 0 or page_num > doc.page_count:
+                continue
+            png_bytes = page_pngs[page_num]
+            if not png_bytes:
+                continue
+            page = doc.load_page(page_num - 1)
+            rect = page.rect
+            try:
+                page.insert_image(rect, stream=png_bytes, overlay=True)
+            except Exception:
+                page.insert_image(rect, stream=png_bytes)
+        buf = io.BytesIO()
+        doc.save(buf, garbage=0, deflate=False)
+        return buf.getvalue()
+    finally:
+        doc.close()
+
+
+def _build_baked_pdf_bytes_overlay_bbox(
+    *,
+    original_pdf_bytes: bytes,
+    overlays: list[tuple[int, float, float, float, float, bytes, bool]],
+) -> bytes:
+    """
+    Bake by placing small transparent PNGs at (x,y,w,h) normalized per page.
+    overlays: list of (page_num, x_norm, y_norm, w_norm, h_norm, png_bytes, is_highlight).
+    Highlights (is_highlight=True) are inserted with overlay=False (behind text); others overlay=True.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except Exception as e:
+        raise RuntimeError("PyMuPDF (fitz) is required for baking PDFs. Please install PyMuPDF.") from e
+
+    doc = fitz.open(stream=original_pdf_bytes, filetype="pdf")
+    try:
+        # Sort: by page, then highlights first (hl=True) so they go behind text
+        def order(o):
+            page_num, _x, _y, _w, _h, _b, is_hl = o
+            return (page_num, 0 if is_hl else 1)
+
+        for page_num, x_norm, y_norm, w_norm, h_norm, png_bytes, is_highlight in sorted(overlays, key=order):
+            if page_num <= 0 or page_num > doc.page_count or not png_bytes:
+                continue
+            page = doc.load_page(page_num - 1)
+            r = page.rect
+            page_w = float(r.width or 1.0)
+            page_h = float(r.height or 1.0)
+            x = float(x_norm) * page_w
+            y = float(y_norm) * page_h
+            w = max(0.5, float(w_norm) * page_w)
+            h = max(0.5, float(h_norm) * page_h)
+            rect = fitz.Rect(x, y, x + w, y + h)
+            try:
+                page.insert_image(rect, stream=png_bytes, overlay=not is_highlight)
+            except TypeError:
+                page.insert_image(rect, stream=png_bytes)
         buf = io.BytesIO()
         doc.save(buf, garbage=0, deflate=False)
         return buf.getvalue()
@@ -1532,14 +1609,20 @@ def save_pdf_annotations(
 
 
 @router.post("/files/{file_id}/bake", response_model=dict)
-def bake_review_pdf(
+async def bake_review_pdf(
+    request: Request,
     file_id: int,
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
     perf: int | None = Query(default=None, description="Perf debug: set to 1 to include timing in response/logs"),
 ):
     """
-    Bake the current annotations JSON into a PDF and store it next to the original PDF.
+    Bake annotations into a PDF and store it next to the original PDF.
+
+    Two modes:
+    - With overlay PNGs (recommended): send multipart form with page_1, page_2, ... (transparent PNGs).
+      No interpretation; avoids data loss. Frontend exports Konva layers as PNG and sends them here.
+    - Without overlay PNGs: backend loads annotations JSON from MinIO and draws them (legacy).
 
     Storage (MinIO):
     - original: `file_asset.file_key` (unchanged)
@@ -1568,6 +1651,52 @@ def bake_review_pdf(
     if not session:
         raise HTTPException(status_code=404, detail="Review session not found. Start review and add annotations first.")
 
+    # Overlay mode 1: bbox crops (overlay_meta JSON + overlay_0, overlay_1, ...)
+    # Overlay mode 2: full-page PNGs (page_1, page_2, ...)
+    page_pngs: dict[int, bytes] = {}
+    overlay_bbox_list: list[tuple[int, float, float, float, float, bytes, bool]] = []
+    try:
+        form = await request.form()
+        overlay_meta_raw = form.get("overlay_meta")
+        if overlay_meta_raw and isinstance(overlay_meta_raw, str):
+            try:
+                meta_list = json.loads(overlay_meta_raw)
+            except Exception:
+                meta_list = []
+            if isinstance(meta_list, list) and len(meta_list) > 0:
+                for i, meta in enumerate(meta_list):
+                    if not isinstance(meta, dict):
+                        continue
+                    page_num = int(meta.get("page") or 1)
+                    x = float(meta.get("x") or 0)
+                    y = float(meta.get("y") or 0)
+                    w = float(meta.get("w") or 0)
+                    h = float(meta.get("h") or 0)
+                    hl = bool(meta.get("hl"))
+                    file_key = f"overlay_{i}"
+                    if file_key not in form:
+                        continue
+                    item = form[file_key]
+                    if hasattr(item, "read") and callable(getattr(item, "read", None)):
+                        body = await item.read()
+                        if body and w > 0 and h > 0:
+                            overlay_bbox_list.append((page_num, x, y, w, h, body, hl))
+        if not overlay_bbox_list:
+            for key in form:
+                if not key.startswith("page_"):
+                    continue
+                try:
+                    page_num = int(key[5:].strip())
+                except ValueError:
+                    continue
+                item = form[key]
+                if hasattr(item, "read") and callable(getattr(item, "read", None)):
+                    body = await item.read()
+                    if body:
+                        page_pngs[page_num] = body
+    except Exception:
+        pass
+
     ann_key = derive_annotations_key(file_asset.file_key, user_id=user.id)
     data = get_json(object_key=ann_key) or {}
     anns = data.get("annotations", [])
@@ -1582,9 +1711,20 @@ def bake_review_pdf(
         raise HTTPException(status_code=500, detail=f"Failed to load original PDF: {str(e)}")
     t_pdf = time.perf_counter() if perf_enabled else 0.0
 
-    # Bake
+    # Bake: bbox overlays > full-page overlays > legacy JSON-draw
     try:
-        baked_bytes = _build_baked_pdf_bytes(original_pdf_bytes=original_pdf_bytes, annotations=anns)
+        if overlay_bbox_list:
+            baked_bytes = _build_baked_pdf_bytes_overlay_bbox(
+                original_pdf_bytes=original_pdf_bytes, overlays=overlay_bbox_list
+            )
+        elif page_pngs:
+            baked_bytes = _build_baked_pdf_bytes_overlay(
+                original_pdf_bytes=original_pdf_bytes, page_pngs=page_pngs
+            )
+        else:
+            baked_bytes = _build_baked_pdf_bytes(
+                original_pdf_bytes=original_pdf_bytes, annotations=anns
+            )
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:

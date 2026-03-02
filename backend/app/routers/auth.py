@@ -15,6 +15,7 @@ from ..schemas import (
     UserOut,
     UserUpdate,
     UserContributionStats,
+    ContributionDetailItem,
     ActivityItem,
     BootstrapAdminRequest,
     LoginRequest,
@@ -28,7 +29,7 @@ from ..schemas import (
     PasswordChangeRequestOut,
     PasswordChangeRequestListOut,
 )
-from ..mariadb.models import FileAsset, Project, Activity
+from ..mariadb.models import FileAsset, Project, Activity, ReviewSession
 from sqlalchemy import func, extract, text
 from datetime import datetime, timezone
 from ..security import hash_password, verify_password
@@ -668,6 +669,8 @@ def get_user_contributions(
                 "individual_items_count": 0,
                 "content_files_count": 0,
                 "total_files_count": 0,
+                "individual_items_review_count": 0,
+                "content_review_count": 0,
             }
 
         year_stats[year_str]["total_files_count"] += 1
@@ -678,6 +681,32 @@ def get_user_contributions(
         elif file_type in ["문제지", "해설지", "정오표"]:
             year_stats[year_str]["content_files_count"] += 1
 
+    # 해당 유저가 검토 완료(approved)한 건수만 카운트 (수정요청·진행중·저장만 한 건은 제외)
+    review_sessions = (
+        db.query(ReviewSession, FileAsset, Project)
+        .join(FileAsset, ReviewSession.file_asset_id == FileAsset.id)
+        .join(Project, FileAsset.project_id == Project.id)
+        .filter(ReviewSession.user_id == user.id, ReviewSession.status == "approved")
+        .all()
+    )
+    for rs, fa, proj in review_sessions:
+        if not proj or not proj.year:
+            continue
+        year_str = proj.year
+        if year_str not in year_stats:
+            year_stats[year_str] = {
+                "individual_items_count": 0,
+                "content_files_count": 0,
+                "total_files_count": 0,
+                "individual_items_review_count": 0,
+                "content_review_count": 0,
+            }
+        file_type = (fa.file_type or "").strip()
+        if file_type == "개별문항":
+            year_stats[year_str]["individual_items_review_count"] += 1
+        elif file_type in ["문제지", "해설지", "정오표"]:
+            year_stats[year_str]["content_review_count"] += 1
+
     # 응답 형식으로 변환
     result = []
     for year_str, stats in sorted(year_stats.items()):
@@ -687,10 +716,75 @@ def get_user_contributions(
                 "individual_items_count": stats["individual_items_count"],
                 "content_files_count": stats["content_files_count"],
                 "total_files_count": stats["total_files_count"],
+                "individual_items_review_count": stats["individual_items_review_count"],
+                "content_review_count": stats["content_review_count"],
             }
         )
 
     return result
+
+
+@router.get("/me/contributions/detail", response_model=List[ContributionDetailItem])
+def get_user_contribution_details(
+    year: str | None = None,
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """유저가 기여한 파일 목록(업로드 + 검토 완료)을 반환합니다. year 지정 시 해당 연도만."""
+    user = get_current_user(db, x_user_id)
+
+    out: list[dict] = []
+
+    # 업로드한 파일
+    upload_query = (
+        db.query(FileAsset, Project)
+        .join(Project, FileAsset.project_id == Project.id)
+        .filter(FileAsset.uploaded_by_user_id == user.id)
+    )
+    if year:
+        upload_query = upload_query.filter(Project.year == year)
+    for fa, proj in upload_query.all():
+        out.append(
+            {
+                "contribution_type": "upload",
+                "file_id": fa.id,
+                "file_name": fa.original_name or "",
+                "file_type": fa.file_type,
+                "project_name": proj.name if proj else "",
+                "project_year": proj.year if proj else None,
+                "date": fa.created_at,
+            }
+        )
+
+    # 검토 완료(approved)한 파일
+    review_query = (
+        db.query(ReviewSession, FileAsset, Project)
+        .join(FileAsset, ReviewSession.file_asset_id == FileAsset.id)
+        .join(Project, FileAsset.project_id == Project.id)
+        .filter(ReviewSession.user_id == user.id, ReviewSession.status == "approved")
+    )
+    if year:
+        review_query = review_query.filter(Project.year == year)
+    for rs, fa, proj in review_query.all():
+        out.append(
+            {
+                "contribution_type": "review",
+                "file_id": fa.id,
+                "file_name": fa.original_name or "",
+                "file_type": fa.file_type,
+                "project_name": proj.name if proj else "",
+                "project_year": proj.year if proj else None,
+                "date": rs.completed_at or rs.updated_at,
+            }
+        )
+
+    # 날짜 내림차순 (최신 먼저)
+    def _sort_key(item: dict) -> float:
+        d = item.get("date")
+        return d.timestamp() if d else 0.0
+
+    out.sort(key=_sort_key, reverse=True)
+    return out
 
 
 @router.post("/me/profile-image")

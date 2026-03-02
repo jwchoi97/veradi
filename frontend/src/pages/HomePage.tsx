@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getAuthedUser } from "@/auth";
-import { UploadCloud, FolderKanban, Users, Clock, FileUp, FileX, CheckCircle, FileText } from "lucide-react";
+import { UploadCloud, FolderKanban, Users, Clock, FileUp, FileX, CheckCircle, FileText, ClipboardCheck, Wallet } from "lucide-react";
 import { getRecentActivities, type ActivityItem } from "@/data/files/api";
 
 function formatTimeAgo(dateString: string): string {
@@ -69,6 +69,26 @@ export default function HomePage() {
           <h2 className="text-lg font-semibold tracking-tight text-slate-900 mb-3">바로가기</h2>
           <div className="space-y-1">
             <Link
+              to="/erp/content/individual"
+              className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-50 transition"
+            >
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-50 flex-shrink-0">
+                <FileText className="h-3.5 w-3.5 text-indigo-700" />
+              </span>
+              <span className="text-sm font-semibold text-slate-900 whitespace-nowrap">개별 문항 업로드</span>
+            </Link>
+
+            <Link
+              to="/reviews/individual"
+              className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-50 transition"
+            >
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-50 flex-shrink-0">
+                <ClipboardCheck className="h-3.5 w-3.5 text-indigo-700" />
+              </span>
+              <span className="text-sm font-semibold text-slate-900 whitespace-nowrap">개별문항 검토</span>
+            </Link>
+
+            <Link
               to="/erp/content/mock"
               className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-50 transition"
             >
@@ -79,13 +99,13 @@ export default function HomePage() {
             </Link>
 
             <Link
-              to="/erp/content/individual"
+              to="/reviews"
               className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-50 transition"
             >
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-50 flex-shrink-0">
-                <FileText className="h-3.5 w-3.5 text-indigo-700" />
+                <CheckCircle className="h-3.5 w-3.5 text-indigo-700" />
               </span>
-              <span className="text-sm font-semibold text-slate-900 whitespace-nowrap">개별 문항 업로드</span>
+              <span className="text-sm font-semibold text-slate-900 whitespace-nowrap">콘텐츠 검토</span>
             </Link>
 
             {canSeeAdmin ? (
@@ -108,6 +128,15 @@ export default function HomePage() {
                     <Users className="h-3.5 w-3.5 text-indigo-700" />
                   </span>
                   <span className="text-sm font-semibold text-slate-900 whitespace-nowrap">유저 관리</span>
+                </Link>
+                <Link
+                  to="/erp/admin/labor"
+                  className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-50 transition"
+                >
+                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-50 flex-shrink-0">
+                    <Wallet className="h-3.5 w-3.5 text-indigo-700" />
+                  </span>
+                  <span className="text-sm font-semibold text-slate-900 whitespace-nowrap">인건비 관리</span>
                 </Link>
               </>
             ) : null}

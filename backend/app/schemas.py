@@ -188,6 +188,23 @@ class UserContributionStats(BaseModel):
     individual_items_count: int  # 개별 문항 업로드 개수
     content_files_count: int  # 콘텐츠 업로드 개수 (문제지, 해설지, 정오표 등)
     total_files_count: int  # 전체 파일 개수
+    individual_items_review_count: int = 0  # 개별 문항 검토 개수
+    content_review_count: int = 0  # 콘텐츠 검토 개수
+
+
+class ContributionDetailItem(BaseModel):
+    """기여 상세 한 건 (업로드 또는 검토 완료)."""
+
+    contribution_type: str  # "upload" | "review"
+    file_id: int
+    file_name: str
+    file_type: str | None
+    project_name: str
+    project_year: str | None
+    date: datetime | None  # 업로드일 또는 검토 완료일
+
+    class Config:
+        from_attributes = True
 
 
 class ActivityItem(BaseModel):
@@ -355,6 +372,62 @@ class AdminUserUpdateRequest(BaseModel):
     """Admin 전용: 유저의 역할/소속팀 변경"""
     role: Optional[UserRole] = None
     departments: Optional[List[Department]] = None
+
+
+# -------- 인건비 관리 --------
+class LaborAccessibleTeamsOut(BaseModel):
+    teams: List[Department]
+
+
+class LaborManagerAssignmentRequest(BaseModel):
+    department: Department
+    lead_user_id: int
+
+
+class LaborManagerAssignmentOut(BaseModel):
+    id: int
+    department: Department
+    lead_user_id: int
+    lead_user_name: str | None = None
+    assigned_by_user_id: int | None = None
+    assigned_by_user_name: str | None = None
+    is_active: bool
+    created_at: datetime
+
+
+class LaborAlphaUpdateRequest(BaseModel):
+    year: str = Field(min_length=1, max_length=10)
+    month: int = Field(ge=1, le=12)
+    alpha_amount: int = Field(ge=0)
+
+
+class LaborMemberSummaryOut(BaseModel):
+    member_user_id: int
+    member_name: str
+    member_username: str
+    upload_set_count: int
+    content_review_approved_count: int
+    alpha_amount: int
+    upload_amount: int
+    review_amount: int
+    total_amount: int
+
+
+class LaborDepartmentSummaryOut(BaseModel):
+    department: Department
+    year: str
+    month: int
+    can_edit: bool
+    upload_unit_amount: int
+    review_unit_amount: int
+    members: List[LaborMemberSummaryOut]
+
+
+class LaborTeamRateUpdateRequest(BaseModel):
+    year: str = Field(min_length=1, max_length=10)
+    month: int = Field(ge=1, le=12)
+    upload_unit_amount: int = Field(ge=0)
+    review_unit_amount: int = Field(ge=0)
 
 
 # -------- 비밀번호 찾기 / 재설정 --------

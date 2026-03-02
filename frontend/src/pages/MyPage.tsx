@@ -1,16 +1,50 @@
 import React, { useEffect, useState, useMemo } from "react";
-import { Camera, Save, Loader2, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Camera, Save, Loader2, X, Search } from "lucide-react";
 import { getAuthedUser, setAuthedUser } from "@/auth";
 import {
   getCurrentUserInfo,
   updateUserInfo,
   getUserContributions,
+  getContributionDetails,
   uploadProfileImage,
   deleteProfileImage,
   type UserInfo,
   type ContributionStats,
+  type ContributionDetailItem,
 } from "@/data/files/api";
 import { prettyDepartment } from "@/data/departments";
+
+export type ContributionDetailCategory =
+  | "individual_upload"
+  | "individual_review"
+  | "content_upload"
+  | "content_review";
+
+const CONTENT_FILE_TYPES = ["문제지", "해설지", "정오표"];
+
+function filterItemsByCategory(
+  items: ContributionDetailItem[],
+  category: ContributionDetailCategory
+): ContributionDetailItem[] {
+  return items.filter((item) => {
+    if (category === "individual_upload") return item.contribution_type === "upload" && item.file_type === "개별문항";
+    if (category === "individual_review") return item.contribution_type === "review" && item.file_type === "개별문항";
+    if (category === "content_upload") return item.contribution_type === "upload" && item.file_type != null && CONTENT_FILE_TYPES.includes(item.file_type);
+    if (category === "content_review") return item.contribution_type === "review" && item.file_type != null && CONTENT_FILE_TYPES.includes(item.file_type);
+    return false;
+  });
+}
+
+function getCategoryLabel(category: ContributionDetailCategory): string {
+  const labels: Record<ContributionDetailCategory, string> = {
+    individual_upload: "개별 문항 (업로드)",
+    individual_review: "개별 문항 (검토)",
+    content_upload: "콘텐츠 (업로드)",
+    content_review: "콘텐츠 (검토)",
+  };
+  return labels[category];
+}
 
 function getInitials(name?: string | null): string {
   if (!name || name.trim().length === 0) return "?";
@@ -30,7 +64,117 @@ function getInitials(name?: string | null): string {
   return trimmed.toUpperCase();
 }
 
-function ContributionChart({ stat }: { stat: ContributionStats | null }) {
+function ContributionDetailRow({ item }: { item: ContributionDetailItem }) {
+  const dateStr = item.date ? new Date(item.date).toLocaleDateString("ko-KR", { year: "numeric", month: "short", day: "numeric" }) : "-";
+  return (
+    <li className="rounded-lg px-3 py-2.5 text-left hover:bg-white/80">
+      <div className="min-w-0">
+        <div className="truncate font-medium text-gray-900">{item.file_name}</div>
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0 text-xs text-gray-500">
+          {item.file_type && <span>{item.file_type}</span>}
+          {item.project_name && <span>· {item.project_name}</span>}
+          {item.project_year && <span>({item.project_year}년)</span>}
+          <span>· {dateStr}</span>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function ContributionDetailModal({
+  open,
+  onClose,
+  category,
+  yearLabel,
+  items,
+  loading,
+}: {
+  open: boolean;
+  onClose: () => void;
+  category: ContributionDetailCategory | null;
+  yearLabel: string;
+  items: ContributionDetailItem[];
+  loading: boolean;
+}) {
+  const [searchQuery, setSearchQuery] = useState("");
+  useEffect(() => {
+    if (open) setSearchQuery("");
+  }, [open]);
+
+  const filteredItems = useMemo(() => {
+    if (!category) return [];
+    const byCategory = filterItemsByCategory(items, category);
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return byCategory;
+    return byCategory.filter((item) => (item.file_name || "").toLowerCase().includes(q));
+  }, [items, category, searchQuery]);
+
+  if (!open) return null;
+
+  const modalContent = (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden />
+      <div className="relative flex h-[70vh] w-full max-w-4xl flex-col rounded-2xl border border-gray-200 bg-white shadow-xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-4 py-3">
+          <h3 className="text-lg font-semibold text-gray-900">
+            {category ? getCategoryLabel(category) : ""} · {yearLabel}
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+            aria-label="닫기"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="shrink-0 border-b border-gray-100 px-4 py-2">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="파일 이름으로 검색..."
+              className="w-full rounded-xl border border-gray-300 py-2 pl-9 pr-3 text-sm placeholder:text-gray-400 focus:border-indigo-500 focus:outline-none"
+            />
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 py-12 text-sm text-gray-500">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              목록 불러오는 중...
+            </div>
+          ) : filteredItems.length === 0 ? (
+            <div className="py-12 text-center text-sm text-gray-500">
+              {searchQuery.trim() ? "검색어에 맞는 항목이 없습니다." : "해당 항목이 없습니다."}
+            </div>
+          ) : (
+            <ul className="divide-y divide-gray-100">
+              {filteredItems.map((item) => (
+                <ContributionDetailRow key={`${item.contribution_type}-${item.file_id}`} item={item} />
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  return createPortal(modalContent, document.body);
+}
+
+function ContributionChart({
+  stat,
+  onOpenDetail,
+}: {
+  stat: ContributionStats | null;
+  onOpenDetail?: (category: ContributionDetailCategory) => void;
+}) {
+  const noop = () => {};
+  const openDetail = onOpenDetail ?? noop;
+
   if (!stat) {
     return (
       <div className="rounded-xl border border-gray-200 bg-gray-50 p-6 text-center text-sm text-gray-500">
@@ -39,22 +183,44 @@ function ContributionChart({ stat }: { stat: ContributionStats | null }) {
     );
   }
 
-  const maxValue = Math.max(stat.individual_items_count, stat.content_files_count, stat.total_files_count, 1);
+  const indReview = stat.individual_items_review_count ?? 0;
+  const contentReview = stat.content_review_count ?? 0;
+  const maxValue = Math.max(
+    stat.individual_items_count,
+    stat.content_files_count,
+    stat.total_files_count,
+    indReview,
+    contentReview,
+    1
+  );
   const individualPercent = maxValue > 0 ? (stat.individual_items_count / maxValue) * 100 : 0;
   const contentPercent = maxValue > 0 ? (stat.content_files_count / maxValue) * 100 : 0;
+  const individualReviewPercent = maxValue > 0 ? (indReview / maxValue) * 100 : 0;
+  const contentReviewPercent = maxValue > 0 ? (contentReview / maxValue) * 100 : 0;
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4">
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-base font-semibold text-gray-900">{stat.year}년</h3>
-        <span className="text-sm text-gray-600">총 {stat.total_files_count}개</span>
+        <span className="text-sm text-gray-600">업로드 총 {stat.total_files_count}개</span>
       </div>
 
       <div className="space-y-2">
         <div>
-          <div className="mb-1 flex items-center justify-between text-xs text-gray-600">
-            <span>개별 문항</span>
-            <span className="font-medium text-indigo-600">{stat.individual_items_count}개</span>
+          <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-600">
+            <span>개별 문항 (업로드)</span>
+            <span className="flex items-center gap-1.5">
+              <span className="font-medium text-indigo-600">{stat.individual_items_count}개</span>
+              {stat.individual_items_count > 0 && (
+                <button
+                  type="button"
+                  onClick={() => openDetail("individual_upload")}
+                  className="text-indigo-600 underline hover:no-underline"
+                >
+                  자세히 보기
+                </button>
+              )}
+            </span>
           </div>
           <div className="h-6 w-full overflow-hidden rounded-full bg-gray-100">
             <div
@@ -65,14 +231,73 @@ function ContributionChart({ stat }: { stat: ContributionStats | null }) {
         </div>
 
         <div>
-          <div className="mb-1 flex items-center justify-between text-xs text-gray-600">
-            <span>콘텐츠</span>
-            <span className="font-medium text-green-600">{stat.content_files_count}개</span>
+          <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-600">
+            <span>개별 문항 (검토)</span>
+            <span className="flex items-center gap-1.5">
+              <span className="font-medium text-indigo-400">{indReview}개</span>
+              {indReview > 0 && (
+                <button
+                  type="button"
+                  onClick={() => openDetail("individual_review")}
+                  className="text-indigo-500 underline hover:no-underline"
+                >
+                  자세히 보기
+                </button>
+              )}
+            </span>
+          </div>
+          <div className="h-6 w-full overflow-hidden rounded-full bg-gray-100">
+            <div
+              className="h-full rounded-full bg-indigo-400 transition-all"
+              style={{ width: `${individualReviewPercent}%` }}
+            />
+          </div>
+        </div>
+
+        <div>
+          <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-600">
+            <span>콘텐츠 (업로드)</span>
+            <span className="flex items-center gap-1.5">
+              <span className="font-medium text-green-600">{stat.content_files_count}개</span>
+              {stat.content_files_count > 0 && (
+                <button
+                  type="button"
+                  onClick={() => openDetail("content_upload")}
+                  className="text-green-600 underline hover:no-underline"
+                >
+                  자세히 보기
+                </button>
+              )}
+            </span>
           </div>
           <div className="h-6 w-full overflow-hidden rounded-full bg-gray-100">
             <div
               className="h-full rounded-full bg-green-500 transition-all"
               style={{ width: `${contentPercent}%` }}
+            />
+          </div>
+        </div>
+
+        <div>
+          <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-600">
+            <span>콘텐츠 (검토)</span>
+            <span className="flex items-center gap-1.5">
+              <span className="font-medium text-green-400">{contentReview}개</span>
+              {contentReview > 0 && (
+                <button
+                  type="button"
+                  onClick={() => openDetail("content_review")}
+                  className="text-green-500 underline hover:no-underline"
+                >
+                  자세히 보기
+                </button>
+              )}
+            </span>
+          </div>
+          <div className="h-6 w-full overflow-hidden rounded-full bg-gray-100">
+            <div
+              className="h-full rounded-full bg-green-400 transition-all"
+              style={{ width: `${contentReviewPercent}%` }}
             />
           </div>
         </div>
@@ -97,6 +322,10 @@ export default function MyPage() {
 
   const [profileImageLoading, setProfileImageLoading] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const [detailModalCategory, setDetailModalCategory] = useState<ContributionDetailCategory | null>(null);
+  const [detailItems, setDetailItems] = useState<ContributionDetailItem[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   useEffect(() => {
     void loadUserInfo();
@@ -146,6 +375,31 @@ export default function MyPage() {
     if (!selectedYear) return null;
     return allContributions.find((c) => c.year === selectedYear) || null;
   }, [selectedYear, allContributions]);
+
+  const loadDetail = async () => {
+    try {
+      setDetailLoading(true);
+      const data = await getContributionDetails(selectedYear || undefined);
+      setDetailItems(data);
+    } catch (e) {
+      console.error(e);
+      setDetailItems([]);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const openDetailModal = (category: ContributionDetailCategory) => {
+    setDetailModalCategory(category);
+    void loadDetail();
+  };
+
+  const closeDetailModal = () => setDetailModalCategory(null);
+
+  // 연도 변경 시 모달이 열려 있으면 목록 다시 로드
+  useEffect(() => {
+    if (detailModalCategory != null && selectedYear) void loadDetail();
+  }, [selectedYear]);
 
   const handleSave = async () => {
     if (!userInfo) return;
@@ -465,8 +719,16 @@ export default function MyPage() {
             {contributionsLoading ? (
               <div className="text-gray-500 text-sm">기여도 데이터를 불러오는 중...</div>
             ) : (
-              <ContributionChart stat={currentContribution} />
+              <ContributionChart stat={currentContribution} onOpenDetail={openDetailModal} />
             )}
+            <ContributionDetailModal
+              open={detailModalCategory != null}
+              onClose={closeDetailModal}
+              category={detailModalCategory}
+              yearLabel={selectedYear ? `${selectedYear}년` : "전체"}
+              items={detailItems}
+              loading={detailLoading}
+            />
           </section>
         </div>
       </div>

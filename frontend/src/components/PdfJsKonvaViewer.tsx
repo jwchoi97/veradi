@@ -1189,15 +1189,37 @@ export default function PdfJsKonvaViewer({
       // 1) Save annotations JSON (sidecar next to original PDF)
       await annotationManagerRef.current?.save?.();
 
-      // 2) Bake JSON into a PDF and overwrite baked sidecar next to original.
-      // This baked PDF is what the upload-page "검토상태" click opens (read-only).
+      // 2) Export annotation overlays as small bbox PNGs + position; highlights go behind text.
+      const overlays = await annotationManagerRef.current?.exportAnnotationOverlays?.() ?? [];
       const me = getAuthedUser();
       const headers: Record<string, string> = {};
       if (typeof me?.id === "number") headers["X-User-Id"] = String(me.id);
+
+      const form = new FormData();
+      if (overlays.length > 0) {
+        form.append(
+          "overlay_meta",
+          JSON.stringify(
+            overlays.map((o) => ({
+              page: o.page,
+              x: o.x,
+              y: o.y,
+              w: o.w,
+              h: o.h,
+              hl: o.isHighlight,
+            }))
+          )
+        );
+        overlays.forEach((o, i) => {
+          form.append(`overlay_${i}`, o.blob, `overlay_${i}.png`);
+        });
+      }
+
       const res = await fetch(resolveApiUrl(`/reviews/files/${fileId}/bake`), {
         method: "POST",
         headers,
         credentials: "include",
+        body: overlays.length > 0 ? form : undefined,
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
@@ -1270,20 +1292,20 @@ export default function PdfJsKonvaViewer({
         return;
       }
 
-      // 모드 전환 (Q: 선택 모드, ESC: 전체화면 닫기 - 브라우저 기본)
-      if (e.key === "q" || e.key === "Q") {
+      // 모드 전환 (1: 선택, 2: 펜, 3: 형광펜, 4: 텍스트, 5: 지우개)
+      if (e.key === "1") {
         setCurrentMode("none");
         try { annotationManagerRef.current?.setMode?.("none" as any); } catch { /* ignore */ }
-      } else if (e.key === "i" || e.key === "I") {
+      } else if (e.key === "2") {
         setCurrentMode("ink");
         try { annotationManagerRef.current?.setMode?.("ink" as any); } catch { /* ignore */ }
-      } else if (e.key === "h" || e.key === "H") {
+      } else if (e.key === "3") {
         setCurrentMode("highlight");
         try { annotationManagerRef.current?.setMode?.("highlight" as any); } catch { /* ignore */ }
-      } else if (e.key === "t" || e.key === "T") {
+      } else if (e.key === "4") {
         setCurrentMode("freetext");
         try { annotationManagerRef.current?.setMode?.("freetext" as any); } catch { /* ignore */ }
-      } else if (e.key === "e" || e.key === "E") {
+      } else if (e.key === "5") {
         setCurrentMode("eraser");
         try { annotationManagerRef.current?.setMode?.("eraser" as any); } catch { /* ignore */ }
       }
@@ -1383,7 +1405,7 @@ export default function PdfJsKonvaViewer({
           <button
             className={`btn ${currentMode === "none" ? "active" : ""}`}
             onClick={() => setCurrentMode("none")}
-            title="선택/이동(Q)"
+            title="선택/이동(1)"
           >
             🖐
           </button>
@@ -1391,7 +1413,7 @@ export default function PdfJsKonvaViewer({
             className={`btn ${currentMode === "ink" ? "active" : ""}`}
             ref={inkBtnRef}
             onClick={handleInkToolClick}
-            title="펜(I)"
+            title="펜(2)"
           >
             ✎
           </button>
@@ -1399,21 +1421,21 @@ export default function PdfJsKonvaViewer({
             className={`btn ${currentMode === "highlight" ? "active" : ""}`}
             ref={highlightBtnRef}
             onClick={handleHighlightToolClick}
-            title="형광펜(H)"
+            title="형광펜(3)"
           >
             🖍
           </button>
           <button
             className={`btn ${currentMode === "freetext" ? "active" : ""}`}
             onClick={handleTextToolClick}
-            title="텍스트(T)"
+            title="텍스트(4)"
           >
             T
           </button>
           <button
             className={`btn ${currentMode === "eraser" ? "active" : ""}`}
             onClick={() => setCurrentMode("eraser")}
-            title="지우개(E)"
+            title="지우개(5)"
           >
             ⌫
           </button>

@@ -298,6 +298,113 @@ class ReviewComment(Base):
 
 
 # --------------------
+# Labor Cost Management
+# --------------------
+class LaborManagerAssignment(Base):
+    __tablename__ = "labor_manager_assignments"
+    __table_args__ = (
+        UniqueConstraint("department", "lead_user_id", name="uq_labor_mgr_department_lead"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    department = Column(Enum(Department), nullable=False, index=True)
+
+    lead_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    assigned_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    lead_user = relationship("User", foreign_keys=[lead_user_id])
+    assigned_by_user = relationship("User", foreign_keys=[assigned_by_user_id])
+
+
+class LaborAlpha(Base):
+    __tablename__ = "labor_alphas"
+    __table_args__ = (
+        UniqueConstraint("year", "department", "member_user_id", name="uq_labor_alpha_year_dept_member"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    year = Column(String(10), nullable=False, index=True)
+    department = Column(Enum(Department), nullable=False, index=True)
+    member_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    alpha_amount = Column(Integer, nullable=False, default=0)
+    updated_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    member_user = relationship("User", foreign_keys=[member_user_id])
+    updated_by_user = relationship("User", foreign_keys=[updated_by_user_id])
+
+
+class LaborTeamRate(Base):
+    __tablename__ = "labor_team_rates"
+    __table_args__ = (
+        UniqueConstraint("department", name="uq_labor_team_rates_department"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    department = Column(Enum(Department), nullable=False, index=True)
+    upload_unit_amount = Column(Integer, nullable=False, default=70000)
+    review_unit_amount = Column(Integer, nullable=False, default=70000)
+    updated_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    updated_by_user = relationship("User", foreign_keys=[updated_by_user_id])
+
+
+class LaborTeamRateHistory(Base):
+    __tablename__ = "labor_team_rate_histories"
+    __table_args__ = (
+        UniqueConstraint("year", "department", name="uq_labor_team_rate_histories_year_department"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    year = Column(String(10), nullable=False, index=True)  # "YYYY-MM"
+    department = Column(Enum(Department), nullable=False, index=True)
+    upload_unit_amount = Column(Integer, nullable=False, default=70000)
+    review_unit_amount = Column(Integer, nullable=False, default=70000)
+    updated_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    updated_by_user = relationship("User", foreign_keys=[updated_by_user_id])
+
+
+# --------------------
 # Signup Request (legacy table)
 # --------------------
 

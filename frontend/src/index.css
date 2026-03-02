@@ -39,4 +39,12 @@
     outline: 2px solid rgba(79, 70, 229, 0.6); /* indigo-600 */
     outline-offset: 2px;
   }
+
+  /* Hide native clear(X) button for month input */
+  input.month-no-clear::-webkit-clear-button,
+  input.month-no-clear::-ms-clear {
+    display: none;
+    width: 0;
+    height: 0;
+  }
 }

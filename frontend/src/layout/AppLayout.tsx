@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Outlet, NavLink, useLocation } from "react-router-dom";
-import { UploadCloud, FileText, FolderKanban, Users, User, Home, CheckCircle, ClipboardCheck } from "lucide-react";
+import { UploadCloud, FileText, FolderKanban, Users, User, Home, CheckCircle, ClipboardCheck, Wallet } from "lucide-react";
 import TopBar from "./TopBar";
 import { ROUTE_MODULES } from "@/router/routes";
 import { getAuthedUser } from "@/auth";
@@ -22,8 +22,8 @@ export default function AppLayout() {
     return ROUTE_MODULES.filter((m) => {
       // 관리자 대시보드는 사이드바에서 제외
       if (m.base === "/erp/admin") return false;
-      // 프로젝트 관리와 유저 관리는 별도로 처리
-      if (m.base === "/erp/admin/projects" || m.base === "/erp/admin/users") return false;
+      // 프로젝트/유저/인건비 관리는 별도로 처리
+      if (m.base === "/erp/admin/projects" || m.base === "/erp/admin/users" || m.base === "/erp/admin/labor") return false;
       // 모의고사 업로드와 개별 문항 업로드는 별도로 처리
       if (m.base === "/erp/content/mock" || m.base === "/erp/content/individual") return false;
       return true;
@@ -180,6 +180,17 @@ export default function AppLayout() {
                   {totalPendingCount > 0 && (
                     <span className="side-link-badge">{totalPendingCount}</span>
                   )}
+                </NavLink>
+                <NavLink
+                  to="/erp/admin/labor"
+                  className={({ isActive }: NavState) =>
+                    `side-link side-link-sub ${isActive ? "active" : ""}`
+                  }
+                >
+                  <span className="side-link-icon">
+                    <Wallet className="h-4 w-4" />
+                  </span>
+                  인건비 관리
                 </NavLink>
               </>
             )}

@@ -271,6 +271,8 @@ export interface ContributionStats {
   individual_items_count: number;
   content_files_count: number;
   total_files_count: number;
+  individual_items_review_count?: number;
+  content_review_count?: number;
 }
 
 export interface ActivityItem {
@@ -283,6 +285,44 @@ export interface ActivityItem {
   file_name: string | null;
   file_type: string | null;
   description: string;
+}
+
+// Labor 관리 API
+export interface LaborAccessibleTeams {
+  teams: string[];
+}
+
+export interface LaborManagerAssignment {
+  id: number;
+  department: string;
+  lead_user_id: number;
+  lead_user_name: string | null;
+  assigned_by_user_id: number | null;
+  assigned_by_user_name: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface LaborMemberSummary {
+  member_user_id: number;
+  member_name: string;
+  member_username: string;
+  upload_set_count: number;
+  content_review_approved_count: number;
+  alpha_amount: number;
+  upload_amount: number;
+  review_amount: number;
+  total_amount: number;
+}
+
+export interface LaborDepartmentSummary {
+  department: string;
+  year: string;
+  month: number;
+  can_edit: boolean;
+  upload_unit_amount: number;
+  review_unit_amount: number;
+  members: LaborMemberSummary[];
 }
 
 // Review 관련 API
@@ -335,6 +375,23 @@ export async function getUserContributions(year?: string): Promise<ContributionS
   return res.data;
 }
 
+export interface ContributionDetailItem {
+  contribution_type: "upload" | "review";
+  file_id: number;
+  file_name: string;
+  file_type: string | null;
+  project_name: string;
+  project_year: string | null;
+  date: string | null;
+}
+
+export async function getContributionDetails(year?: string): Promise<ContributionDetailItem[]> {
+  const res = await api.get<ContributionDetailItem[]>(`/auth/me/contributions/detail`, {
+    params: year ? { year } : undefined,
+  });
+  return res.data;
+}
+
 export async function uploadProfileImage(file: File): Promise<{ profile_image_url: string }> {
   const formData = new FormData();
   formData.append("file", file);
@@ -350,6 +407,60 @@ export async function deleteProfileImage(): Promise<void> {
 
 export async function getRecentActivities(limit = 10): Promise<ActivityItem[]> {
   const res = await api.get<ActivityItem[]>(`/auth/activities`, { params: { limit } });
+  return res.data;
+}
+
+export async function getLaborTeams(): Promise<LaborAccessibleTeams> {
+  const res = await api.get<LaborAccessibleTeams>("/labor/teams");
+  return res.data;
+}
+
+export async function getLaborAssignments(department?: string): Promise<LaborManagerAssignment[]> {
+  const res = await api.get<LaborManagerAssignment[]>("/labor/assignments", {
+    params: department ? { department } : undefined,
+  });
+  return res.data;
+}
+
+export async function createLaborAssignment(payload: {
+  department: string;
+  lead_user_id: number;
+}): Promise<LaborManagerAssignment> {
+  const res = await api.post<LaborManagerAssignment>("/labor/assignments", payload);
+  return res.data;
+}
+
+export async function deleteLaborAssignment(department: string, leadUserId: number): Promise<void> {
+  await api.delete("/labor/assignments", {
+    params: { department, lead_user_id: leadUserId },
+  });
+}
+
+export async function getLaborDepartmentMembers(
+  department: string,
+  year?: string,
+  month?: number
+): Promise<LaborDepartmentSummary> {
+  const res = await api.get<LaborDepartmentSummary>(`/labor/${department}/members`, {
+    params: year ? { year, month } : undefined,
+  });
+  return res.data;
+}
+
+export async function updateLaborAlpha(
+  department: string,
+  memberId: number,
+  payload: { year: string; month: number; alpha_amount: number }
+): Promise<{ ok: boolean }> {
+  const res = await api.put<{ ok: boolean }>(`/labor/${department}/members/${memberId}/alpha`, payload);
+  return res.data;
+}
+
+export async function updateLaborTeamRates(
+  department: string,
+  payload: { year: string; month: number; upload_unit_amount: number; review_unit_amount: number }
+): Promise<{ ok: boolean }> {
+  const res = await api.put<{ ok: boolean }>(`/labor/${department}/rates`, payload);
   return res.data;
 }
 

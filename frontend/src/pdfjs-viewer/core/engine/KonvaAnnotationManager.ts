@@ -100,6 +100,12 @@ export class KonvaAnnotationManager {
   // editor overlay
   private textEditingOverlay: HTMLDivElement | null = null;
   private textEditingInput: HTMLElement | null = null;
+  /** 대표 색상 5개 (글자색) - 선택된 상태에서 다시 클릭하면 색상 변경 */
+  private textFgPalette: string[] = ["#111827", "#dc2626", "#2563eb", "#16a34a", "#f59e0b"];
+  private textFgPaletteIdx = 0;
+  /** 대표 색상 5개 (배경색) */
+  private textBgPalette: string[] = ["#ffffff", "#fef3c7", "#dbeafe", "#d1fae5", "#fce7f3"];
+  private textBgPaletteIdx = 0;
 
   // highlight (native text selection) DOM hook
   private highlightSelectionCleanup: (() => void) | null = null;
@@ -345,6 +351,11 @@ export class KonvaAnnotationManager {
   }
 
   private cleanupTextEditorDom() {
+    try {
+      (this.textEditingOverlay as any)?.__removeColorDropdownListener?.();
+    } catch {
+      /* ignore */
+    }
     try {
       this.textEditingInput?.remove?.();
     } catch {
@@ -601,6 +612,283 @@ export class KonvaAnnotationManager {
 
   async save() {
     await saveAnnotations(this.fileId, this.userId, this.annotations);
+  }
+
+  private _dataUrlToBlob(dataUrl: string): Promise<Blob> {
+    return fetch(dataUrl).then((r) => r.blob());
+  }
+
+  /** Bounding box in page pixels (x, y, w, h). */
+  private _getAnnotationBbox(ann: Annotation, pageNum: number): { x: number; y: number; w: number; h: number } | null {
+    const m = this.pageMetrics.get(pageNum);
+    if (!m || !m.width || !m.height) return null;
+    const pageW = m.width;
+    const pageH = m.height;
+    const data = ann.data || {};
+    const v = data.v;
+    const pad = 4;
+
+    if (ann.type === "highlight") {
+      const rectsNorm = data.rectsNorm;
+      if (Array.isArray(rectsNorm) && rectsNorm.length > 0) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const rn of rectsNorm) {
+          if (!rn || typeof rn !== "object") continue;
+          const x = (Number((rn as any).x) ?? 0) * pageW;
+          const y = (Number((rn as any).y) ?? 0) * pageH;
+          const rw = (Number((rn as any).width) ?? 0) * pageW;
+          const rh = (Number((rn as any).height) ?? 0) * pageH;
+          if (rw <= 0 || rh <= 0) continue;
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x + rw);
+          maxY = Math.max(maxY, y + rh);
+        }
+        if (minX === Infinity) return null;
+        return {
+          x: Math.max(0, minX - pad),
+          y: Math.max(0, minY - pad),
+          w: Math.min(pageW - Math.max(0, minX - pad), maxX - minX + pad * 2),
+          h: Math.min(pageH - Math.max(0, minY - pad), maxY - minY + pad * 2),
+        };
+      }
+      if (data.rectNorm && typeof data.rectNorm === "object") {
+        const rn = data.rectNorm as any;
+        const x = (Number(rn.x) ?? 0) * pageW;
+        const y = (Number(rn.y) ?? 0) * pageH;
+        const rw = (Number(rn.width) ?? 0) * pageW;
+        const rh = (Number(rn.height) ?? 0) * pageH;
+        if (rw <= 0 || rh <= 0) return null;
+        return {
+          x: Math.max(0, x - pad),
+          y: Math.max(0, y - pad),
+          w: Math.min(pageW - Math.max(0, x - pad), rw + pad * 2),
+          h: Math.min(pageH - Math.max(0, y - pad), rh + pad * 2),
+        };
+      }
+      if (v === 2 && data.kind === "stroke" && Array.isArray(data.pointsNorm)) {
+        const pts = data.pointsNorm as number[];
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (let i = 0; i < pts.length; i += 2) {
+          const px = (pts[i] ?? 0) * pageW;
+          const py = (pts[i + 1] ?? 0) * pageH;
+          minX = Math.min(minX, px);
+          minY = Math.min(minY, py);
+          maxX = Math.max(maxX, px);
+          maxY = Math.max(maxY, py);
+        }
+        if (minX === Infinity) return null;
+        const stroke = Math.max(2, (data.width ?? 12) * 1.5);
+        return {
+          x: Math.max(0, minX - stroke - pad),
+          y: Math.max(0, minY - stroke - pad),
+          w: Math.min(pageW, maxX - minX + stroke * 2 + pad * 2),
+          h: Math.min(pageH, maxY - minY + stroke * 2 + pad * 2),
+        };
+      }
+      return null;
+    }
+
+    if (ann.type === "ink" && Array.isArray(data.pointsNorm)) {
+      const pts = data.pointsNorm as number[];
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (let i = 0; i < pts.length; i += 2) {
+        const px = (pts[i] ?? 0) * pageW;
+        const py = (pts[i + 1] ?? 0) * pageH;
+        minX = Math.min(minX, px);
+        minY = Math.min(minY, py);
+        maxX = Math.max(maxX, px);
+        maxY = Math.max(maxY, py);
+      }
+      if (minX === Infinity) return null;
+      const stroke = Math.max(2, (data.width ?? 2) * 1.5);
+      return {
+        x: Math.max(0, minX - stroke - pad),
+        y: Math.max(0, minY - stroke - pad),
+        w: Math.min(pageW, maxX - minX + stroke * 2 + pad * 2),
+        h: Math.min(pageH, maxY - minY + stroke * 2 + pad * 2),
+      };
+    }
+
+    if (ann.type === "freetext") {
+      const x = (v === 2 ? (data.xNorm ?? 0) : (data.x ?? 0) / pageW) * pageW;
+      const y = (v === 2 ? (data.yNorm ?? 0) : (data.y ?? 0) / pageH) * pageH;
+      const w = (v === 2 ? (data.widthNorm ?? 0.25) : (data.width ?? 240) / pageW) * pageW;
+      const h = (v === 2 ? (data.heightNorm ?? 0.12) : (data.height ?? 80) / pageH) * pageH;
+      if (w <= 0 || h <= 0) return null;
+      return {
+        x: Math.max(0, x - pad),
+        y: Math.max(0, y - pad),
+        w: Math.min(pageW - Math.max(0, x - pad), w + pad * 2),
+        h: Math.min(pageH - Math.max(0, y - pad), h + pad * 2),
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * Export one annotation as a small transparent PNG (bounding box only) for bake overlay.
+   * Returns normalized (0..1) position and size so backend can place on PDF page.
+   */
+  private async _exportOneAnnotationCrop(
+    ann: Annotation,
+    pageNum: number,
+    bbox: { x: number; y: number; w: number; h: number },
+  ): Promise<{ x: number; y: number; w: number; h: number; blob: Blob; isHighlight: boolean } | null> {
+    if (this.destroyed) return null;
+    const m = this.pageMetrics.get(pageNum);
+    if (!m || bbox.w < 1 || bbox.h < 1) return null;
+    const pageW = m.width;
+    const pageH = m.height;
+    const data = ann.data || {};
+    const v = data.v;
+    const ox = bbox.x;
+    const oy = bbox.y;
+    const cw = Math.max(1, Math.ceil(bbox.w));
+    const ch = Math.max(1, Math.ceil(bbox.h));
+
+    const container = document.createElement("div");
+    container.style.position = "fixed";
+    container.style.left = "-9999px";
+    container.style.top = "0";
+    container.style.width = `${cw}px`;
+    container.style.height = `${ch}px`;
+    container.style.pointerEvents = "none";
+    document.body.appendChild(container);
+
+    try {
+      const stage = new Konva.Stage({ container, width: cw, height: ch });
+      const layer = new Konva.Layer();
+      stage.add(layer);
+
+      if (ann.type === "highlight") {
+        const opacity = Math.min(1, Math.max(0.05, typeof data.opacity === "number" ? data.opacity : this.highlightSettings.opacity));
+        const color = (typeof data.color === "string" ? data.color : this.highlightSettings.color) || "#FFF066";
+        const rectsNorm = data.rectsNorm;
+        if (Array.isArray(rectsNorm) && rectsNorm.length > 0) {
+          for (const rn of rectsNorm) {
+            if (!rn || typeof rn !== "object") continue;
+            const x = (Number((rn as any).x) ?? 0) * pageW - ox;
+            const y = (Number((rn as any).y) ?? 0) * pageH - oy;
+            const rw = (Number((rn as any).width) ?? 0) * pageW;
+            const rh = (Number((rn as any).height) ?? 0) * pageH;
+            if (rw <= 0 || rh <= 0) continue;
+            layer.add(new Konva.Rect({
+              x, y, width: rw, height: rh,
+              fill: color, opacity, listening: false, globalCompositeOperation: "multiply",
+            }));
+          }
+        } else if (data.rectNorm && typeof data.rectNorm === "object") {
+          const rn = data.rectNorm as any;
+          const x = (Number(rn.x) ?? 0) * pageW - ox;
+          const y = (Number(rn.y) ?? 0) * pageH - oy;
+          const rw = (Number(rn.width) ?? 0) * pageW;
+          const rh = (Number(rn.height) ?? 0) * pageH;
+          if (rw > 0 && rh > 0) {
+            layer.add(new Konva.Rect({
+              x, y, width: rw, height: rh,
+              fill: color, opacity, listening: false, globalCompositeOperation: "multiply",
+            }));
+          }
+        } else if (v === 2 && data.kind === "stroke" && Array.isArray(data.pointsNorm)) {
+          const color = (typeof data.color === "string" ? data.color : this.highlightSettings.color) || "#FFF066";
+          const opacityStroke = Math.min(1, Math.max(0.05, typeof data.opacity === "number" ? data.opacity : this.highlightSettings.opacity));
+          const pts: number[] = [];
+          for (let i = 0; i < data.pointsNorm.length; i += 2) {
+            pts.push((data.pointsNorm[i] ?? 0) * pageW - ox, (data.pointsNorm[i + 1] ?? 0) * pageH - oy);
+          }
+          if (pts.length >= 4) {
+            const line = new Konva.Line({
+              points: pts,
+              stroke: color,
+              strokeWidth: data.width ?? 12,
+              opacity: opacityStroke,
+              lineCap: "round", lineJoin: "round", tension: 0.5,
+              globalCompositeOperation: "multiply",
+              listening: false,
+            });
+            layer.add(line);
+          }
+        }
+      } else if (ann.type === "ink" && Array.isArray(data.pointsNorm)) {
+        const pts: number[] = [];
+        for (let i = 0; i < data.pointsNorm.length; i += 2) {
+          pts.push((data.pointsNorm[i] ?? 0) * pageW - ox, (data.pointsNorm[i + 1] ?? 0) * pageH - oy);
+        }
+        if (pts.length >= 4) {
+          const line = new Konva.Line({
+            points: pts,
+            stroke: data.color || "#111827",
+            strokeWidth: data.width || 2,
+            lineCap: "round", lineJoin: "round", tension: 0.35,
+            listening: false,
+          });
+          layer.add(line);
+        }
+      } else if (ann.type === "freetext") {
+        const node = this.pageGroups.get(pageNum)?.findOne(`#${ann.id}`);
+        if (node) {
+          const clone = node.clone();
+          clone.position({ x: node.x() - ox, y: node.y() - oy });
+          clone.listening(false);
+          layer.add(clone);
+        }
+      }
+
+      layer.draw();
+      const dataUrl = stage.toDataURL({ mimeType: "image/png", pixelRatio: 1 });
+      stage.destroy();
+      const blob = await this._dataUrlToBlob(dataUrl);
+      if (!blob || blob.size === 0) return null;
+      return {
+        x: ox / pageW,
+        y: oy / pageH,
+        w: bbox.w / pageW,
+        h: bbox.h / pageH,
+        blob,
+        isHighlight: ann.type === "highlight",
+      };
+    } catch {
+      return null;
+    } finally {
+      try {
+        container.remove();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
+   * Export annotation overlays as small bounding-box PNGs with position info.
+   * Highlights are marked so backend can place them behind text (overlay=False).
+   */
+  async exportAnnotationOverlays(): Promise<
+    { page: number; x: number; y: number; w: number; h: number; blob: Blob; isHighlight: boolean }[]
+  > {
+    if (this.destroyed) return [];
+    const out: { page: number; x: number; y: number; w: number; h: number; blob: Blob; isHighlight: boolean }[] = [];
+    for (const pageNum of this.pageMetrics.keys()) {
+      const pageAnns = this.annotations[pageNum] || [];
+      for (const ann of pageAnns) {
+        const bbox = this._getAnnotationBbox(ann, pageNum);
+        if (!bbox) continue;
+        const crop = await this._exportOneAnnotationCrop(ann, pageNum, bbox);
+        if (crop && crop.blob.size > 0) {
+          out.push({
+            page: pageNum,
+            x: crop.x,
+            y: crop.y,
+            w: crop.w,
+            h: crop.h,
+            blob: crop.blob,
+            isHighlight: crop.isHighlight,
+          });
+        }
+      }
+    }
+    return out;
   }
 
   setMode(mode: AnnotationType) {
@@ -2163,6 +2451,7 @@ export class KonvaAnnotationManager {
     const defaultItalic = !!data.italic;
     const defaultUnderline = !!data.underline;
     const defaultFontSize = typeof data.fontSizeNorm === "number" ? Math.max(10, data.fontSizeNorm * pageH) : 16;
+    const TEXT_LINE_HEIGHT_RATIO = 1.4;
 
     const runsPx: Array<{ text: string; color: string; fontSize: number; fontWeight: "normal" | "bold"; italic?: boolean; underline?: boolean }> =
       Array.isArray(data.runs) && data.runs.length
@@ -2196,11 +2485,11 @@ export class KonvaAnnotationManager {
 
     let cursorX = 0;
     let cursorY = 0;
-    let lineH = Math.max(14, defaultFontSize * 1.25);
+    let lineH = Math.max(1, defaultFontSize * TEXT_LINE_HEIGHT_RATIO);
     const newLine = () => {
       cursorX = 0;
       cursorY += lineH;
-      lineH = Math.max(14, defaultFontSize * 1.25);
+      lineH = Math.max(1, defaultFontSize * TEXT_LINE_HEIGHT_RATIO);
     };
 
     for (const rr of normalized) {
@@ -2213,7 +2502,7 @@ export class KonvaAnnotationManager {
       const fontSizePx = Math.max(10, Number(rr?.fontSize || defaultFontSize));
       const fontStyle = fontWeight === "bold" && italic ? "bold italic" : fontWeight === "bold" ? "bold" : italic ? "italic" : "normal";
       const font = `${fontStyle} ${fontSizePx}px ${fontFamily}`;
-      const segLineH = Math.max(14, fontSizePx * 1.25);
+      const segLineH = Math.max(1, fontSizePx * TEXT_LINE_HEIGHT_RATIO);
 
       let i = 0;
       while (i < t.length) {
@@ -3038,7 +3327,9 @@ export class KonvaAnnotationManager {
 
     const content = document.createElement("div");
     content.style.flex = "1 1 auto";
-    content.style.overflow = "auto";
+    // Grow editor box instead of showing internal scrollbars while typing.
+    content.style.overflow = "hidden";
+    content.style.background = "transparent";
 
     const ed = document.createElement("div");
     ed.contentEditable = "true";
@@ -3054,18 +3345,23 @@ export class KonvaAnnotationManager {
     const baseWeight: "normal" | "bold" = data.fontWeight === "bold" ? "bold" : "normal";
     const baseItalic = !!data.italic;
     const baseUnderline = !!data.underline;
+    const TEXT_LINE_HEIGHT_RATIO = 1.4;
     ed.style.fontSize = `${baseFontSize}px`;
     ed.style.fontFamily = String(data.fontFamily || "Arial");
+    ed.style.lineHeight = String(TEXT_LINE_HEIGHT_RATIO);
     ed.style.color = baseColor;
     ed.style.fontWeight = baseWeight;
     ed.style.fontStyle = baseItalic ? "italic" : "normal";
     ed.style.textDecoration = baseUnderline ? "underline" : "none";
     ed.style.background = "transparent";
 
-    // apply bgColor to overlay at start
+    // apply bgColor to overlay and content at start (content 영역에도 적용해 편집 중 배경이 보이도록)
     try {
       const bg = typeof data.bgColor === "string" && data.bgColor.trim() ? data.bgColor.trim() : "";
-      if (bg) overlay.style.background = bg;
+      if (bg) {
+        overlay.style.background = bg;
+        content.style.background = bg;
+      }
     } catch {
       /* ignore */
     }
@@ -3128,9 +3424,9 @@ export class KonvaAnnotationManager {
       const end = preEnd.toString().length;
       return { start, end };
     };
-    const restoreSelection = (sel: { start: number; end: number }) => {
+    const restoreSelection = (sel: { start: number; end: number }, opts?: { focus?: boolean }) => {
       try {
-        ed.focus();
+        if (opts?.focus !== false) ed.focus();
         const s = Math.max(0, Math.min(sel.start, sel.end));
         const e = Math.max(0, Math.max(sel.start, sel.end));
         const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
@@ -3207,28 +3503,85 @@ export class KonvaAnnotationManager {
       }
     });
 
+    // 현재 배경/글자색에 맞춰 팔레트 인덱스 동기화 (없으면 첫 칸에 현재 색 설정)
+    const initBg = typeof data.bgColor === "string" && data.bgColor.trim().startsWith("#") ? data.bgColor.trim() : "#ffffff";
+    const bgIdx = this.textBgPalette.indexOf(initBg);
+    if (bgIdx >= 0) this.textBgPaletteIdx = bgIdx;
+    else {
+      this.textBgPalette[0] = initBg;
+      this.textBgPaletteIdx = 0;
+    }
+    const fgIdx = this.textFgPalette.indexOf(baseColor);
+    if (fgIdx >= 0) this.textFgPaletteIdx = fgIdx;
+    else {
+      this.textFgPalette[0] = baseColor;
+      this.textFgPaletteIdx = 0;
+    }
+
     const bgLabel = document.createElement("span");
-    bgLabel.textContent = "BG";
+    bgLabel.textContent = "BC";
     bgLabel.style.fontSize = "12px";
     bgLabel.style.opacity = "0.75";
     const bgColorInput = document.createElement("input");
     bgColorInput.type = "color";
-    bgColorInput.value = typeof data.bgColor === "string" && data.bgColor.trim().startsWith("#") ? data.bgColor.trim() : "#ffffff";
+    bgColorInput.value = this.textBgPalette[this.textBgPaletteIdx] ?? "#ffffff";
     bgColorInput.style.position = "absolute";
     bgColorInput.style.width = "1px";
     bgColorInput.style.height = "1px";
     bgColorInput.style.opacity = "0";
-    // keep it programmatically clickable for color picker
-    bgColorInput.style.pointerEvents = "auto";
-    const bgBtn = document.createElement("button");
-    bgBtn.type = "button";
-    bgBtn.style.width = "24px";
-    bgBtn.style.height = "24px";
-    bgBtn.style.borderRadius = "6px";
-    bgBtn.style.border = "1px solid rgba(17,24,39,0.18)";
-    bgBtn.style.background = bgColorInput.value;
-    bgBtn.style.cursor = "pointer";
-    bgBtn.title = "배경색";
+    bgColorInput.style.pointerEvents = "none";
+    const bgCurrentBtn = document.createElement("button");
+    bgCurrentBtn.type = "button";
+    bgCurrentBtn.style.width = "24px";
+    bgCurrentBtn.style.height = "24px";
+    bgCurrentBtn.style.borderRadius = "6px";
+    bgCurrentBtn.style.border = "1px solid rgba(17,24,39,0.18)";
+    bgCurrentBtn.style.background = this.textBgPalette[this.textBgPaletteIdx] ?? "#ffffff";
+    bgCurrentBtn.style.cursor = "pointer";
+    bgCurrentBtn.title = "배경색 (클릭하면 대표 색 5개)";
+    const bgDropdown = document.createElement("div");
+    bgDropdown.style.display = "none";
+    bgDropdown.style.position = "absolute";
+    bgDropdown.style.top = "100%";
+    bgDropdown.style.left = "0";
+    bgDropdown.style.marginTop = "4px";
+    bgDropdown.style.padding = "6px";
+    bgDropdown.style.background = "#fff";
+    bgDropdown.style.border = "1px solid rgba(17,24,39,0.14)";
+    bgDropdown.style.borderRadius = "8px";
+    bgDropdown.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)";
+    bgDropdown.style.flexDirection = "row";
+    bgDropdown.style.gap = "6px";
+    bgDropdown.style.flexWrap = "nowrap";
+    bgDropdown.style.zIndex = "10001";
+    const bgSwatches: HTMLButtonElement[] = [];
+    for (let i = 0; i < 5; i++) {
+      const swatch = document.createElement("button");
+      swatch.type = "button";
+      swatch.style.width = "22px";
+      swatch.style.height = "22px";
+      swatch.style.borderRadius = "50%";
+      swatch.style.border = "2px solid rgba(17,24,39,0.25)";
+      swatch.style.background = this.textBgPalette[i] ?? "#ffffff";
+      swatch.style.cursor = "pointer";
+      swatch.style.flexShrink = "0";
+      swatch.title = i === this.textBgPaletteIdx ? "선택됨 (한 번 더 클릭하면 색상 변경)" : "배경색 선택";
+      if (i === this.textBgPaletteIdx) {
+        swatch.style.borderColor = "#6366f1";
+        swatch.style.boxShadow = "0 0 0 2px rgba(99,102,241,0.3)";
+      }
+      bgDropdown.appendChild(swatch);
+      bgSwatches.push(swatch);
+    }
+    const bgWrap = document.createElement("div");
+    bgWrap.style.position = "relative";
+    bgWrap.style.display = "flex";
+    bgWrap.style.alignItems = "center";
+    bgWrap.style.gap = "6px";
+    bgWrap.appendChild(bgLabel);
+    bgWrap.appendChild(bgCurrentBtn);
+    bgWrap.appendChild(bgDropdown);
+    bgWrap.appendChild(bgColorInput);
 
     const fgLabel = document.createElement("span");
     fgLabel.textContent = "A";
@@ -3236,30 +3589,71 @@ export class KonvaAnnotationManager {
     fgLabel.style.opacity = "0.75";
     const fgColorInput = document.createElement("input");
     fgColorInput.type = "color";
-    fgColorInput.value = baseColor;
+    fgColorInput.value = this.textFgPalette[this.textFgPaletteIdx] ?? baseColor;
     fgColorInput.style.position = "absolute";
     fgColorInput.style.width = "1px";
     fgColorInput.style.height = "1px";
     fgColorInput.style.opacity = "0";
-    fgColorInput.style.pointerEvents = "auto";
-    const fgBtn = document.createElement("button");
-    fgBtn.type = "button";
-    fgBtn.style.width = "24px";
-    fgBtn.style.height = "24px";
-    fgBtn.style.borderRadius = "6px";
-    fgBtn.style.border = "1px solid rgba(17,24,39,0.18)";
-    fgBtn.style.background = curColor;
-    fgBtn.style.cursor = "pointer";
-    fgBtn.title = "글자색(선택)";
+    fgColorInput.style.pointerEvents = "none";
+    const fgCurrentBtn = document.createElement("button");
+    fgCurrentBtn.type = "button";
+    fgCurrentBtn.style.width = "24px";
+    fgCurrentBtn.style.height = "24px";
+    fgCurrentBtn.style.borderRadius = "6px";
+    fgCurrentBtn.style.border = "1px solid rgba(17,24,39,0.18)";
+    fgCurrentBtn.style.background = this.textFgPalette[this.textFgPaletteIdx] ?? "#111827";
+    fgCurrentBtn.style.cursor = "pointer";
+    fgCurrentBtn.title = "글자색 (클릭하면 대표 색 5개)";
+    const fgDropdown = document.createElement("div");
+    fgDropdown.style.display = "none";
+    fgDropdown.style.position = "absolute";
+    fgDropdown.style.top = "100%";
+    fgDropdown.style.left = "0";
+    fgDropdown.style.marginTop = "4px";
+    fgDropdown.style.padding = "6px";
+    fgDropdown.style.background = "#fff";
+    fgDropdown.style.border = "1px solid rgba(17,24,39,0.14)";
+    fgDropdown.style.borderRadius = "8px";
+    fgDropdown.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)";
+    fgDropdown.style.flexDirection = "row";
+    fgDropdown.style.gap = "6px";
+    fgDropdown.style.flexWrap = "nowrap";
+    fgDropdown.style.zIndex = "10001";
+    const fgSwatches: HTMLButtonElement[] = [];
+    for (let i = 0; i < 5; i++) {
+      const swatch = document.createElement("button");
+      swatch.type = "button";
+      swatch.style.width = "22px";
+      swatch.style.height = "22px";
+      swatch.style.borderRadius = "50%";
+      swatch.style.border = "2px solid rgba(17,24,39,0.25)";
+      swatch.style.background = this.textFgPalette[i] ?? "#111827";
+      swatch.style.cursor = "pointer";
+      swatch.style.flexShrink = "0";
+      swatch.title = i === this.textFgPaletteIdx ? "선택됨 (한 번 더 클릭하면 색상 변경)" : "글자색 선택";
+      if (i === this.textFgPaletteIdx) {
+        swatch.style.borderColor = "#6366f1";
+        swatch.style.boxShadow = "0 0 0 2px rgba(99,102,241,0.3)";
+      }
+      fgDropdown.appendChild(swatch);
+      fgSwatches.push(swatch);
+    }
+    const fgWrap = document.createElement("div");
+    fgWrap.style.position = "relative";
+    fgWrap.style.display = "flex";
+    fgWrap.style.alignItems = "center";
+    fgWrap.style.gap = "6px";
+    fgWrap.appendChild(fgLabel);
+    fgWrap.appendChild(fgCurrentBtn);
+    fgWrap.appendChild(fgDropdown);
+    fgWrap.appendChild(fgColorInput);
 
-    const sizeDec = mkBtn("−");
-    const sizeInc = mkBtn("+");
     const sizeInput = document.createElement("input");
     sizeInput.type = "number";
-    sizeInput.min = "10";
-    sizeInput.max = "96";
+    sizeInput.min = "1";
+    sizeInput.max = "99";
     sizeInput.step = "1";
-    sizeInput.value = String(curFontSize);
+    sizeInput.value = String(Math.max(1, Math.min(99, Math.round(curFontSize))));
     (sizeInput as any).inputMode = "numeric";
     sizeInput.style.width = "54px";
     sizeInput.style.height = "26px";
@@ -3269,7 +3663,7 @@ export class KonvaAnnotationManager {
     sizeInput.style.fontSize = "12px";
     sizeInput.style.opacity = "0.95";
     sizeInput.style.outline = "none";
-    sizeInput.title = "글자 크기 (선택 영역)";
+    sizeInput.title = "글자 크기 (숫자 입력 후 Enter/바깥 클릭으로 적용)";
 
     const btnB = mkBtn("B");
     const btnI = mkBtn("I");
@@ -3294,25 +3688,113 @@ export class KonvaAnnotationManager {
       }
     };
 
-    bgBtn.addEventListener("mousedown", (e) => {
+    let bgExpanded = false;
+    let fgExpanded = false;
+    const closeBgDropdown = () => {
+      bgExpanded = false;
+      bgDropdown.style.display = "none";
+    };
+    const closeFgDropdown = () => {
+      fgExpanded = false;
+      fgDropdown.style.display = "none";
+    };
+    const updateBgCurrentBtn = () => {
+      bgCurrentBtn.style.background = this.textBgPalette[this.textBgPaletteIdx] ?? "#ffffff";
+    };
+    const updateFgCurrentBtn = () => {
+      fgCurrentBtn.style.background = this.textFgPalette[this.textFgPaletteIdx] ?? "#111827";
+    };
+    bgCurrentBtn.addEventListener("mousedown", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openColorPicker(bgColorInput);
+      closeFgDropdown();
+      bgExpanded = !bgExpanded;
+      bgDropdown.style.display = bgExpanded ? "flex" : "none";
     });
+    fgCurrentBtn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeBgDropdown();
+      fgExpanded = !fgExpanded;
+      fgDropdown.style.display = fgExpanded ? "flex" : "none";
+    });
+    const closeDropdownsOnOutsideClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (bgWrap.contains(target) || fgWrap.contains(target)) return;
+      closeBgDropdown();
+      closeFgDropdown();
+    };
+    document.addEventListener("mousedown", closeDropdownsOnOutsideClick);
+    (overlay as any).__removeColorDropdownListener = () =>
+      document.removeEventListener("mousedown", closeDropdownsOnOutsideClick);
+
+    const updateBgSwatchActive = () => {
+      bgSwatches.forEach((s, i) => {
+        s.style.borderColor = i === this.textBgPaletteIdx ? "#6366f1" : "rgba(17,24,39,0.25)";
+        s.style.boxShadow = i === this.textBgPaletteIdx ? "0 0 0 2px rgba(99,102,241,0.3)" : "none";
+        s.title = i === this.textBgPaletteIdx ? "선택됨 (한 번 더 클릭하면 색상 변경)" : "배경색 선택";
+      });
+      updateBgCurrentBtn();
+    };
+    const updateFgSwatchActive = () => {
+      fgSwatches.forEach((s, i) => {
+        s.style.borderColor = i === this.textFgPaletteIdx ? "#6366f1" : "rgba(17,24,39,0.25)";
+        s.style.boxShadow = i === this.textFgPaletteIdx ? "0 0 0 2px rgba(99,102,241,0.3)" : "none";
+        s.title = i === this.textFgPaletteIdx ? "선택됨 (한 번 더 클릭하면 색상 변경)" : "글자색 선택";
+      });
+      updateFgCurrentBtn();
+    };
+    for (let i = 0; i < 5; i++) {
+      bgSwatches[i].addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (i !== this.textBgPaletteIdx) {
+          this.textBgPaletteIdx = i;
+          const next = this.textBgPalette[i] ?? "#ffffff";
+          bgColorInput.value = next;
+          updateBgSwatchActive();
+          const sel = captureSelection();
+          ann.data = { ...(ann.data || {}), bgColor: next };
+          try {
+            overlay.style.background = next;
+            content.style.background = next;
+          } catch {
+            /* ignore */
+          }
+          this.recordUndo([pageNum], () => {
+            ann.data = { ...(ann.data || {}), bgColor: next };
+          });
+          try {
+            const g = this.getOrCreatePageGroup(pageNum);
+            const box = g.findOne(`#${id}`) as Konva.Group | null;
+            const rect = box?.findOne?.(".textbox-rect") as Konva.Rect | null;
+            if (rect) rect.fill(next);
+            this.contentLayer?.batchDraw();
+          } catch {
+            /* ignore */
+          }
+          restoreSelection(sel);
+          return;
+        }
+        openColorPicker(bgColorInput);
+      });
+    }
     bgColorInput.addEventListener("input", () => {
       const sel = captureSelection();
       const next = bgColorInput.value;
-      bgBtn.style.background = next;
+      this.textBgPalette[this.textBgPaletteIdx] = next;
+      bgSwatches[this.textBgPaletteIdx].style.background = next;
+      updateBgCurrentBtn();
+      ann.data = { ...(ann.data || {}), bgColor: next };
       try {
         overlay.style.background = next;
+        content.style.background = next;
       } catch {
         /* ignore */
       }
-      // persist
       this.recordUndo([pageNum], () => {
         ann.data = { ...(ann.data || {}), bgColor: next };
       });
-      // update konva rect immediately
       try {
         const g = this.getOrCreatePageGroup(pageNum);
         const box = g.findOne(`#${id}`) as Konva.Group | null;
@@ -3325,45 +3807,45 @@ export class KonvaAnnotationManager {
       restoreSelection(sel);
     });
 
-    fgBtn.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openColorPicker(fgColorInput);
-    });
+    for (let i = 0; i < 5; i++) {
+      fgSwatches[i].addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (i !== this.textFgPaletteIdx) {
+          this.textFgPaletteIdx = i;
+          curColor = this.textFgPalette[i] ?? baseColor;
+          fgColorInput.value = curColor;
+          updateFgSwatchActive();
+          applyToSelection({ color: curColor });
+          return;
+        }
+        openColorPicker(fgColorInput);
+      });
+    }
     fgColorInput.addEventListener("input", () => {
-      const sel = captureSelection();
       curColor = fgColorInput.value;
-      fgBtn.style.background = curColor;
+      this.textFgPalette[this.textFgPaletteIdx] = curColor;
+      fgSwatches[this.textFgPaletteIdx].style.background = curColor;
+      updateFgCurrentBtn();
       applyToSelection({ color: curColor });
-      restoreSelection(sel);
     });
 
-    const setFontSize = (next: number) => {
-      curFontSize = Math.max(10, Math.min(96, next));
-      sizeInput.value = String(curFontSize);
-      applyToSelection({ fontSize: curFontSize });
+    const setFontSize = (next: number, opts?: { keepFocusEl?: HTMLInputElement; syncInput?: boolean }) => {
+      const parsed = Math.floor(next);
+      curFontSize = Math.max(1, Math.min(99, Number.isFinite(parsed) ? parsed : 16));
+      if (opts?.syncInput !== false) sizeInput.value = String(curFontSize);
+      applyToSelection({ fontSize: curFontSize }, { keepFocusEl: opts?.keepFocusEl });
     };
-    sizeDec.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const sel = captureSelection();
-      setFontSize(curFontSize - 1);
-      restoreSelection(sel);
-    });
-    sizeInc.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const sel = captureSelection();
-      setFontSize(curFontSize + 1);
-      restoreSelection(sel);
-    });
 
     // Keep a sticky selection snapshot so toolbar inputs can apply to selected text
     // even if the input temporarily takes focus.
     let toolbarStickySel = { start: 0, end: 0 };
     const rememberSel = () => {
       try {
-        toolbarStickySel = captureSelection();
+        const nextSel = captureSelection();
+        // Don't clobber sticky selection with empty/collapsed selection
+        // when toolbar controls take focus (e.g. number spinner repeated clicks).
+        if (nextSel.end > nextSel.start) toolbarStickySel = nextSel;
       } catch {
         /* ignore */
       }
@@ -3375,24 +3857,53 @@ export class KonvaAnnotationManager {
       rememberSel();
       e.stopPropagation();
     });
+    sizeInput.addEventListener("input", () => {
+      // typing 값은 보존하되, 숫자로 해석 가능한 경우 편집 중 즉시 반영한다.
+      const raw = String(sizeInput.value ?? "").trim();
+      if (!raw || !/^\d+$/.test(raw)) return;
+      const v = Number.parseInt(raw, 10);
+      if (!Number.isFinite(v)) return;
+      setFontSize(v, { keepFocusEl: sizeInput, syncInput: false });
+    });
+    const commitTypedFontSize = () => {
+      const raw = String(sizeInput.value ?? "").trim();
+      if (!raw || !/^\d+$/.test(raw)) {
+        sizeInput.value = String(curFontSize);
+        return;
+      }
+      const v = Number.parseInt(raw, 10);
+      if (!Number.isFinite(v)) {
+        sizeInput.value = String(curFontSize);
+        return;
+      }
+      setFontSize(v, { syncInput: true });
+    };
+    sizeInput.addEventListener("change", () => {
+      commitTypedFontSize();
+    });
+    sizeInput.addEventListener("blur", () => {
+      commitTypedFontSize();
+    });
     sizeInput.addEventListener("keydown", (e) => {
+      const allow = ["Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Tab", "Home", "End", "Enter", "Escape"];
+      if (allow.includes(e.key) || e.ctrlKey || e.metaKey) {
+        // pass
+      } else if (e.key.length === 1 && !/[0-9]/.test(e.key)) {
+        e.preventDefault();
+        return;
+      }
       if (e.key === "Enter") {
         e.preventDefault();
         e.stopPropagation();
-        try {
-          restoreSelection(toolbarStickySel);
-        } catch {
-          /* ignore */
-        }
-        const v = Number(sizeInput.value);
-        if (Number.isFinite(v)) setFontSize(v);
-        try {
-          ed.focus();
-        } catch {
-          /* ignore */
-        }
+        commitTypedFontSize();
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        sizeInput.value = String(curFontSize);
       }
     });
+
 
     btnB.addEventListener("mousedown", (e) => {
       e.preventDefault();
@@ -3423,15 +3934,9 @@ export class KonvaAnnotationManager {
       applyToSelection({ underline: curUnderline });
     });
 
-    topbar.appendChild(bgLabel);
-    topbar.appendChild(bgColorInput);
-    topbar.appendChild(bgBtn);
-    topbar.appendChild(fgLabel);
-    topbar.appendChild(fgColorInput);
-    topbar.appendChild(fgBtn);
-    topbar.appendChild(sizeDec);
+    topbar.appendChild(bgWrap);
+    topbar.appendChild(fgWrap);
     topbar.appendChild(sizeInput);
-    topbar.appendChild(sizeInc);
     topbar.appendChild(btnB);
     topbar.appendChild(btnI);
     topbar.appendChild(btnU);
@@ -3454,18 +3959,44 @@ export class KonvaAnnotationManager {
       r.insertNode(span);
     };
 
-    const applyToSelection = (style: { color?: string; fontSize?: number; fontWeight?: "normal" | "bold"; italic?: boolean; underline?: boolean }) => {
-      const sel = captureSelection();
+    const applyToSelection = (
+      style: { color?: string; fontSize?: number; fontWeight?: "normal" | "bold"; italic?: boolean; underline?: boolean },
+      opts?: { keepFocusEl?: HTMLInputElement }
+    ) => {
+      const liveSel = captureSelection();
+      const effectiveSel = liveSel.end > liveSel.start ? liveSel : toolbarStickySel;
+      if (effectiveSel.end <= effectiveSel.start) return;
+      const prevCaretPos = opts?.keepFocusEl?.selectionStart ?? null;
+      try {
+        restoreSelection(effectiveSel);
+      } catch {
+        /* ignore */
+      }
       this.applyTextFormatToActiveSelection(style);
       try {
         applyDomStyleToSelection(style);
       } catch {
         /* ignore */
       }
+      // Keep editor DOM synced with run styles for immediate visual feedback.
       try {
-        restoreSelection(sel);
+        renderEditor();
       } catch {
         /* ignore */
+      }
+      try {
+        restoreSelection(effectiveSel, { focus: !opts?.keepFocusEl });
+      } catch {
+        /* ignore */
+      }
+      toolbarStickySel = effectiveSel;
+      if (opts?.keepFocusEl) {
+        try {
+          opts.keepFocusEl.focus();
+          if (prevCaretPos != null) opts.keepFocusEl.setSelectionRange(prevCaretPos, prevCaretPos);
+        } catch {
+          /* ignore */
+        }
       }
       autoFitOverlayToContent();
       syncCaretStyle();
@@ -3483,11 +4014,11 @@ export class KonvaAnnotationManager {
       const defaultFontSize = baseFontSize;
       let cursorX = 0;
       let cursorY = 0;
-      let lineH = Math.max(14, defaultFontSize * 1.25);
+      let lineH = Math.max(1, defaultFontSize * TEXT_LINE_HEIGHT_RATIO);
       const newLine = () => {
         cursorX = 0;
         cursorY += lineH;
-        lineH = Math.max(14, defaultFontSize * 1.25);
+        lineH = Math.max(1, defaultFontSize * TEXT_LINE_HEIGHT_RATIO);
       };
       for (const rr of runs) {
         const t = String(rr?.text ?? "");
@@ -3497,7 +4028,7 @@ export class KonvaAnnotationManager {
         const fontSizePx = Math.max(10, Number(rr?.fontSize || defaultFontSize));
         const fontStyle = fontWeight === "bold" && italic ? "bold italic" : fontWeight === "bold" ? "bold" : italic ? "italic" : "normal";
         const font = `${fontStyle} ${fontSizePx}px ${fontFamily}`;
-        const segLineH = Math.max(14, fontSizePx * 1.25);
+        const segLineH = Math.max(1, fontSizePx * TEXT_LINE_HEIGHT_RATIO);
         let i = 0;
         while (i < t.length) {
           const ch = t[i]!;
@@ -3536,12 +4067,16 @@ export class KonvaAnnotationManager {
       return cursorY + lineH;
     };
 
+    let autoFitMinHeightPx = Math.max(EDIT_MIN_H, Math.max(EDIT_MIN_H, h + TOPBAR_H));
     const autoFitOverlayToContent = () => {
       try {
         const maxW = Math.max(1, ed.clientWidth - padPx * 2);
         const runs = this.activeTextEdit?.id === id ? (this.activeTextEdit.runs as any[]) : [];
-        const textH = Math.max(EDIT_MIN_TEXT_H, Math.ceil(measureRunsHeightPx(runs, maxW)) + padPx * 2);
-        const desiredH = Math.max(EDIT_MIN_H, TOPBAR_H + textH);
+        const measuredTextH = Math.max(EDIT_MIN_TEXT_H, Math.ceil(measureRunsHeightPx(runs, maxW)) + padPx * 2);
+        const domTextH = Math.max(EDIT_MIN_TEXT_H, Math.ceil(ed.scrollHeight || 0));
+        const textH = Math.max(measuredTextH, domTextH);
+        const desiredH = Math.max(autoFitMinHeightPx, TOPBAR_H + textH);
+        if (desiredH > autoFitMinHeightPx) autoFitMinHeightPx = desiredH;
         overlay.style.height = `${desiredH}px`;
       } catch {
         /* ignore */
@@ -3563,14 +4098,22 @@ export class KonvaAnnotationManager {
 
     const syncCaretStyle = () => {
       try {
-        const idx = captureSelection().start ?? 0;
+        const sel = captureSelection();
+        const idx = sel.start ?? 0;
         const r = getRunStyleAtIndex(this.activeTextEdit?.runs as any, idx);
         if (!r) return;
         curColor = String(r.color || baseColor);
         fgColorInput.value = curColor;
-        fgBtn.style.background = curColor;
-        curFontSize = Math.max(10, Number(r.fontSize || baseFontSize));
-        sizeInput.value = String(curFontSize);
+        fgCurrentBtn.style.background = curColor;
+        const matchedFgIdx = this.textFgPalette.findIndex((c) => String(c).toLowerCase() === curColor.toLowerCase());
+        if (matchedFgIdx >= 0 && matchedFgIdx !== this.textFgPaletteIdx) {
+          this.textFgPaletteIdx = matchedFgIdx;
+          updateFgSwatchActive();
+        }
+        curFontSize = Math.max(1, Math.min(99, Math.round(Number(r.fontSize || baseFontSize) || baseFontSize)));
+        if (document.activeElement !== sizeInput) {
+          sizeInput.value = String(curFontSize);
+        }
         curBold = r.fontWeight === "bold";
         curItalic = !!r.italic;
         curUnderline = !!r.underline;
@@ -3581,11 +4124,45 @@ export class KonvaAnnotationManager {
         /* ignore */
       }
     };
+    const onSelectionChange = () => {
+      const sel = window.getSelection?.();
+      if (!sel || sel.rangeCount === 0) return;
+      const r = sel.getRangeAt(0);
+      if (!ed.contains(r.startContainer) || !ed.contains(r.endContainer)) return;
+      syncCaretStyle();
+    };
     ed.addEventListener("mouseup", syncCaretStyle);
     ed.addEventListener("keyup", syncCaretStyle as any);
+    ed.addEventListener("click", syncCaretStyle);
+    ed.addEventListener("focus", syncCaretStyle as any);
+    document.addEventListener("selectionchange", onSelectionChange);
 
     // input -> update runs (IME-safe; no DOM rebuild)
-    const getEditorText = () => String((ed as any).innerText != null ? String((ed as any).innerText) : String(ed.textContent || "")).replace(/\r\n/g, "\n");
+    // Use explicit line breaks only; avoid `innerText` soft-wrap artifacts.
+    const getEditorText = () => {
+      const parts: string[] = [];
+      const walk = (node: Node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          parts.push(String((node as Text).data || "").replace(/[\u200B\u200C\u200D\uFEFF]/g, "").replace(/\u00A0/g, " "));
+          return;
+        }
+        if (node.nodeName === "BR") {
+          parts.push("\n");
+          return;
+        }
+        const el = node as HTMLElement;
+        const isBlock = !!el && /^(DIV|P|LI)$/.test(el.tagName || "");
+        const beforeLen = parts.length;
+        const children = Array.from(node.childNodes || []);
+        for (const c of children) walk(c);
+        if (isBlock && node !== ed && parts.length > beforeLen) {
+          const joined = parts.join("");
+          if (!joined.endsWith("\n")) parts.push("\n");
+        }
+      };
+      walk(ed);
+      return parts.join("").replace(/\r\n/g, "\n").replace(/[\u200B\u200C\u200D\uFEFF]/g, "").replace(/\u00A0/g, " ");
+    };
     let lastText = getEditorText();
     const commonPrefixLen = (a: string, b: string) => {
       const n = Math.min(a.length, b.length);
@@ -3684,6 +4261,11 @@ export class KonvaAnnotationManager {
         /* ignore */
       }
       try {
+        document.removeEventListener("selectionchange", onSelectionChange);
+      } catch {
+        /* ignore */
+      }
+      try {
         overlay.remove();
       } catch {
         /* ignore */
@@ -3724,7 +4306,7 @@ export class KonvaAnnotationManager {
       const bb = overlay.getBoundingClientRect();
       this.recordUndo([pageNum], () => {
         ann.data = {
-          ...data,
+          ...(ann.data || data || {}),
           v: 2,
           kind: "textbox",
           text: rawFull,
@@ -3794,16 +4376,12 @@ export class KonvaAnnotationManager {
               r.deleteContents();
               const br = document.createElement("br");
               r.insertNode(br);
-              // place caret after <br>
-              r.setStartAfter(br);
-              r.setEndAfter(br);
-              sel.removeAllRanges();
-              sel.addRange(r);
-              // Add a zero-width space to ensure caret stays on a new line in some browsers
-              const zw = document.createTextNode("\u200B");
-              r.insertNode(zw);
-              r.setStartAfter(zw);
-              r.setEndAfter(zw);
+              // Anchor caret on the new line immediately (browser can otherwise keep it
+              // visually on previous line until ArrowDown). Marker is stripped on save.
+              const marker = document.createTextNode("\u200B");
+              br.parentNode?.insertBefore(marker, br.nextSibling);
+              r.setStartAfter(marker);
+              r.setEndAfter(marker);
               sel.removeAllRanges();
               sel.addRange(r);
             }
