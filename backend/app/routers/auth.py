@@ -795,8 +795,8 @@ async def upload_profile_image(
 ):
     """프로필 이미지를 업로드합니다."""
     from ..minio.client import minio_client, ensure_bucket, DEFAULT_BUCKET
-    from minio.error import S3Error
-    
+    from botocore.exceptions import ClientError
+
     user = get_current_user(db, x_user_id)
 
     # 이미지 파일만 허용
@@ -830,10 +830,10 @@ async def upload_profile_image(
                         bucket_name=DEFAULT_BUCKET,
                         object_name=obj.object_name
                     )
-                except S3Error:
+                except ClientError:
                     # 파일이 없거나 삭제 실패해도 계속 진행 (best-effort)
                     pass
-        except (S3Error, RuntimeError):
+        except (ClientError, RuntimeError):
             # 삭제 실패해도 새 파일 업로드는 진행 (best-effort)
             pass
 
@@ -852,7 +852,7 @@ async def upload_profile_image(
 
     # URL 생성 (presigned URL - 최대 7일)
     try:
-        # MinIO/S3 presigned URL은 최대 7일까지만 지원하므로 7일로 제한
+        # S3 presigned URL은 최대 7일까지만 지원하므로 7일로 제한
         profile_url = presign_download_url(
             object_key=up.object_key,
             expires_minutes=60 * 24 * 7,  # 7일
@@ -928,11 +928,11 @@ def delete_profile_image(
 ):
     """프로필 이미지를 제거하고 기본 아바타로 되돌립니다."""
     from ..minio.client import minio_client, ensure_bucket, DEFAULT_BUCKET
-    from minio.error import S3Error
-    
+    from botocore.exceptions import ClientError
+
     user = get_current_user(db, x_user_id)
 
-    # 프로필 이미지 파일이 있다면 MinIO에서도 삭제
+    # 프로필 이미지 파일이 있다면 S3에서도 삭제
     profile_prefix = f"profiles/user_{user.id}/"
     try:
         ensure_bucket(DEFAULT_BUCKET)
@@ -947,10 +947,10 @@ def delete_profile_image(
                     bucket_name=DEFAULT_BUCKET,
                     object_name=obj.object_name
                 )
-            except S3Error:
+            except ClientError:
                 # 파일이 없거나 삭제 실패해도 계속 진행 (best-effort)
                 pass
-    except (S3Error, RuntimeError):
+    except (ClientError, RuntimeError):
         # 삭제 실패해도 DB 업데이트는 진행 (best-effort)
         pass
 

@@ -13,7 +13,7 @@ INVALID_KEY_CHARS = r'[\x00-\x1f\x7f]'  # control chars
 
 def sanitize_filename(name: str, max_len: int = 120) -> str:
     """
-    Make a filename safe to embed into an S3/MinIO object key.
+    Make a filename safe to embed into an S3 object key.
     - Remove path separators and control characters
     - Collapse whitespace
     - Keep dots, underscores, hyphens
@@ -88,7 +88,7 @@ def build_project_slug(name: str, year: Optional[str], subject: Optional[str], p
 
 def build_file_key(project_slug: str, deadline: Optional[datetime], file_type: str, original_name: str) -> str:
     """
-    Build a human-readable object key for MinIO.
+    Build a human-readable object key for S3.
     콘텐츠(문제지/해설지/정오표)와 개별문항 모두 projects/.../files/{file_type}/ 아래에 저장.
     """
     safe_name = sanitize_filename(original_name)

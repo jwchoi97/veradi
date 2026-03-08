@@ -218,7 +218,7 @@ class Activity(Base):
 
 
 class ReviewSession(Base):
-    """유저별 검토 세션: file_asset_id + user_id 당 하나. baked PDF, annotations JSON은 MinIO에서 user별 분리 저장."""
+    """유저별 검토 세션: file_asset_id + user_id 당 하나. baked PDF, annotations JSON은 S3에서 user별 분리 저장."""
 
     __tablename__ = "review_sessions"
 
@@ -280,7 +280,7 @@ class ReviewComment(Base):
     # 텍스트 코멘트 내용
     text_content = Column(Text, nullable=True)
 
-    # 손글씨 이미지 URL (MinIO에 저장)
+    # 손글씨 이미지 URL (S3에 저장)
     handwriting_image_url = Column(String(512), nullable=True)
 
     # 페이지 번호 (PDF의 경우)

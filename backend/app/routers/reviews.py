@@ -27,7 +27,7 @@ from ..minio.service import upload_stream, presign_download_url, upload_json, ge
 from ..minio.client import ensure_bucket, minio_client
 from ..schemas import PDFAnnotation, PDFAnnotationsData, PDFAnnotationCreate
 from ..utils.storage_derivation import derive_annotations_key, derive_baked_key
-from minio.error import S3Error
+from botocore.exceptions import ClientError
 import json
 import uuid
 import os
@@ -68,11 +68,12 @@ def _probe_object_size_cached(object_key: str) -> int | None:
         size = int(getattr(stat, "size", 0) or 0)
         _OBJECT_SIZE_CACHE[key] = (size, now + _OBJECT_SIZE_CACHE_TTL_SECONDS)
         return size
-    except S3Error as e:
-        if e.code in ("NoSuchKey", "NoSuchObject"):
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchKey", "404"):
             _OBJECT_SIZE_CACHE[key] = (_MISSING_SIZE, now + _OBJECT_MISS_TTL_SECONDS)
             return None
-        if e.code == "AccessDenied":
+        if code == "AccessDenied":
             # Treat as "unknown" (do not raise) to avoid breaking review UI.
             _OBJECT_SIZE_CACHE[key] = (_MISSING_SIZE, now + _OBJECT_MISS_TTL_SECONDS)
             return None
@@ -610,8 +611,9 @@ def get_file_inline_url(
         try:
             minio_client.stat_object(bucket_name=DEFAULT_BUCKET, object_name=baked_key)
             preferred_key = baked_key
-        except S3Error as e:
-            if e.code not in ("NoSuchKey", "NoSuchObject", "AccessDenied"):
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code not in ("NoSuchKey", "404", "AccessDenied"):
                 raise
 
     try:
@@ -661,7 +663,7 @@ def proxy_file_for_viewer(
         if (variant or "").lower() == "baked":
             preferred_key = derive_baked_key(file_asset.file_key, user_id=uid)
 
-        # Avoid a MinIO stat call for every Range request:
+        # Avoid an S3 stat call for every Range request:
         # Prefer DB-cached size when available; fall back to cached stat probe only when needed.
         total_size: int | None = None
         if preferred_key == file_asset.file_key:
@@ -751,7 +753,7 @@ def proxy_file_for_viewer(
                     headers["X-Proxy-Range"] = f"{start}-{end}"
                     headers["X-Proxy-TotalSize"] = str(total_size or "")
                 headers["X-Proxy-SizeProbeMs"] = str(int(max(0.0, (t_after_size - t_start) * 1000.0)))
-                headers["X-Proxy-MinIOGetMs"] = str(int(max(0.0, (t_after_get - t_before_get) * 1000.0)))
+                headers["X-Proxy-S3GetMs"] = str(int(max(0.0, (t_after_get - t_before_get) * 1000.0)))
             except Exception:
                 pass
             try:
@@ -763,7 +765,7 @@ def proxy_file_for_viewer(
                         "is_partial": is_partial,
                         "range": f"{start}-{end}" if is_partial else None,
                         "size_probe_ms": int(max(0.0, (t_after_size - t_start) * 1000.0)),
-                        "minio_get_ms": int(max(0.0, (t_after_get - t_before_get) * 1000.0)),
+                        "s3_get_ms": int(max(0.0, (t_after_get - t_before_get) * 1000.0)),
                         "total_size": int(total_size or 0) if supports_range else None,
                     },
                 )
@@ -1457,7 +1459,7 @@ def get_pdf_annotations(
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
-    """PDF 주석 데이터를 MinIO에서 조회합니다."""
+    """PDF 주석 데이터를 S3에서 조회합니다."""
     user = get_current_user(db, x_user_id)
 
     file_asset = db.query(FileAsset).filter(FileAsset.id == file_id).first()
@@ -1519,7 +1521,7 @@ def save_pdf_annotations(
     return_full: int | None = Query(default=None, description="Set to 1 to return full annotations payload"),
     perf: int | None = Query(default=None, description="Perf debug: set to 1 to include timing in response/logs"),
 ):
-    """PDF 주석 데이터를 MinIO에 저장합니다."""
+    """PDF 주석 데이터를 S3에 저장합니다."""
     user = get_current_user(db, x_user_id)
 
     file_asset = db.query(FileAsset).filter(FileAsset.id == file_id).first()
@@ -1622,9 +1624,9 @@ async def bake_review_pdf(
     Two modes:
     - With overlay PNGs (recommended): send multipart form with page_1, page_2, ... (transparent PNGs).
       No interpretation; avoids data loss. Frontend exports Konva layers as PNG and sends them here.
-    - Without overlay PNGs: backend loads annotations JSON from MinIO and draws them (legacy).
+    - Without overlay PNGs: backend loads annotations JSON from S3 and draws them (legacy).
 
-    Storage (MinIO):
+    Storage (S3):
     - original: `file_asset.file_key` (unchanged)
     - baked:    `derive_baked_key(file_asset.file_key)` (overwrite; no history)
     - json:     `derive_annotations_key(file_asset.file_key)` (must already exist; overwrite via /annotations)

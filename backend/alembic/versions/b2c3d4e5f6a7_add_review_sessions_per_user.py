@@ -5,7 +5,7 @@ Revises: a1b2c3d4e5f6
 Create Date: 2026-02-22
 
 유저별 검토 세션: file_asset_id + user_id 당 하나의 세션.
-baked PDF, annotations JSON은 MinIO에서 user_id 기반 경로로 분리 저장.
+baked PDF, annotations JSON은 S3에서 user_id 기반 경로로 분리 저장.
 """
 from typing import Sequence, Union
 
