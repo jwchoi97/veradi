@@ -217,7 +217,7 @@ def get_project_individual_items_count(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    ensure_can_manage_project(user, project)
+    # 조회는 소속팀 무관 허용
 
     files = (
         db.query(FileAsset)

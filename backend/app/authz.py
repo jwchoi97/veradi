@@ -38,6 +38,11 @@ def _allowed_departments(user: User) -> set[Department]:
     return set()
 
 
+def get_allowed_departments(user: User) -> set[Department]:
+    """유저가 접근 가능한 과목(부서) 집합. 목록 필터링 등에 사용."""
+    return _allowed_departments(user)
+
+
 def ensure_can_create_project(user: User, subject: Department) -> None:
     if user.role == UserRole.ADMIN:
         return
@@ -64,6 +69,7 @@ def ensure_can_create_project(user: User, subject: Department) -> None:
 
 
 def ensure_can_manage_project(user: User, project: Project) -> None:
+    """ADMIN/LEAD만 프로젝트 생성·수정·삭제 가능. MEMBER 불가."""
     if user.role == UserRole.ADMIN:
         return
 
@@ -88,3 +94,35 @@ def ensure_can_manage_project(user: User, project: Project) -> None:
 
     if subj is None or subj not in allowed:
         raise HTTPException(status_code=403, detail="다른 과목 프로젝트는 관리할 수 없습니다.")
+
+
+def ensure_can_access_project(user: User, project: Project) -> None:
+    """
+    ADMIN/LEAD/MEMBER 모두 프로젝트 접근 가능.
+    단, LEAD/MEMBER는 소속팀(과목) 프로젝트만 접근 가능.
+    파일 업로드·조회·다운로드·검토 등에 사용.
+    """
+    if user.role == UserRole.ADMIN:
+        return
+
+    if user.role not in (UserRole.LEAD, UserRole.MEMBER):
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    subj_raw = getattr(project, "subject", None)
+    subj = _normalize_department(subj_raw)
+    allowed = _allowed_departments(user)
+
+    if _AUTHZ_DEBUG:
+        print(
+            "[AUTHZ access]",
+            "user_id=", getattr(user, "id", None),
+            "role=", getattr(user, "role", None),
+            "legacy=", getattr(user, "department", None),
+            "allowed=", sorted([a.value for a in allowed]),
+            "project_id=", getattr(project, "id", None),
+            "project_subject_raw=", subj_raw, type(subj_raw),
+            "project_subject_norm=", subj,
+        )
+
+    if subj is None or subj not in allowed:
+        raise HTTPException(status_code=403, detail="다른 과목 프로젝트는 접근할 수 없습니다.")

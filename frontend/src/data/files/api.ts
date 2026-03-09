@@ -325,6 +325,25 @@ export interface LaborDepartmentSummary {
   members: LaborMemberSummary[];
 }
 
+export interface MyLaborEstimateDepartmentItem {
+  department: string;
+  upload_set_count: number;
+  content_review_approved_count: number;
+  alpha_amount: number;
+  upload_unit_amount: number;
+  review_unit_amount: number;
+  upload_amount: number;
+  review_amount: number;
+  total_amount: number;
+}
+
+export interface MyLaborEstimate {
+  year: string;
+  month: number;
+  departments: MyLaborEstimateDepartmentItem[];
+  total_amount: number;
+}
+
 // Review 관련 API
 export async function listContentFilesForReview(): Promise<Review[]> {
   const res = await api.get<Review[]>("/reviews/content-files");
@@ -370,8 +389,13 @@ export async function updateUserInfo(payload: { name?: string; phone_number?: st
   return res.data;
 }
 
-export async function getUserContributions(year?: string): Promise<ContributionStats[]> {
-  const res = await api.get<ContributionStats[]>(`/auth/me/contributions`, { params: year ? { year } : undefined });
+export async function getUserContributions(year?: string, month?: number): Promise<ContributionStats[]> {
+  const params: Record<string, string | number> = {};
+  if (year) params.year = year;
+  if (month != null) params.month = month;
+  const res = await api.get<ContributionStats[]>(`/auth/me/contributions`, {
+    params: Object.keys(params).length > 0 ? params : undefined,
+  });
   return res.data;
 }
 
@@ -385,9 +409,12 @@ export interface ContributionDetailItem {
   date: string | null;
 }
 
-export async function getContributionDetails(year?: string): Promise<ContributionDetailItem[]> {
+export async function getContributionDetails(year?: string, month?: number): Promise<ContributionDetailItem[]> {
+  const params: Record<string, string | number> = {};
+  if (year) params.year = year;
+  if (month != null) params.month = month;
   const res = await api.get<ContributionDetailItem[]>(`/auth/me/contributions/detail`, {
-    params: year ? { year } : undefined,
+    params: Object.keys(params).length > 0 ? params : undefined,
   });
   return res.data;
 }
@@ -443,6 +470,16 @@ export async function getLaborDepartmentMembers(
 ): Promise<LaborDepartmentSummary> {
   const res = await api.get<LaborDepartmentSummary>(`/labor/${department}/members`, {
     params: year ? { year, month } : undefined,
+  });
+  return res.data;
+}
+
+export async function getMyLaborEstimate(year?: string, month?: number): Promise<MyLaborEstimate> {
+  const params: Record<string, string | number> = {};
+  if (year) params.year = year;
+  if (month != null) params.month = month;
+  const res = await api.get<MyLaborEstimate>("/labor/me/estimate", {
+    params: Object.keys(params).length > 0 ? params : undefined,
   });
   return res.data;
 }

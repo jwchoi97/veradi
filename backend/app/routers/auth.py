@@ -4,7 +4,7 @@ import os
 import secrets
 import re
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import DataError, DBAPIError
 
@@ -36,6 +36,9 @@ from ..security import hash_password, verify_password
 from ..minio.service import upload_stream, presign_download_url, delete_object
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+MIN_HISTORY_YEAR = 2026
+MIN_HISTORY_MONTH = 1
+MIN_HISTORY_AT = datetime(2026, 1, 1)
 
 
 def get_db():
@@ -633,20 +636,35 @@ def update_current_user_info(
 @router.get("/me/contributions")
 def get_user_contributions(
     year: str | None = None,
+    month: int | None = Query(default=None, ge=1, le=12),
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
     """유저의 년도별 기여도를 조회합니다."""
     user = get_current_user(db, x_user_id)
+    if month is not None and not year:
+        raise HTTPException(status_code=400, detail="year is required when month is provided")
+
+    year_int: int | None = None
+    if year:
+        try:
+            year_int = int(year)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid year")
+        if month is not None and (year_int, month) < (MIN_HISTORY_YEAR, MIN_HISTORY_MONTH):
+            raise HTTPException(status_code=400, detail="Only 2026-01 or later is supported")
+        if month is None and year_int < MIN_HISTORY_YEAR:
+            raise HTTPException(status_code=400, detail="Only 2026 or later is supported")
 
     # 모든 파일에서 해당 유저가 업로드한 파일들
-    base_query = db.query(FileAsset).filter(FileAsset.uploaded_by_user_id == user.id)
-
-    # 년도 필터링 (프로젝트의 year 기준)
-    if year:
-        projects = db.query(Project).filter(Project.year == year).all()
-        project_ids = [p.id for p in projects]
-        base_query = base_query.filter(FileAsset.project_id.in_(project_ids))
+    base_query = db.query(FileAsset).filter(
+        FileAsset.uploaded_by_user_id == user.id,
+        FileAsset.created_at >= MIN_HISTORY_AT,
+    )
+    if year_int is not None:
+        base_query = base_query.filter(extract("year", FileAsset.created_at) == year_int)
+    if month is not None:
+        base_query = base_query.filter(extract("month", FileAsset.created_at) == month)
 
     all_files = base_query.all()
 
@@ -663,7 +681,7 @@ def get_user_contributions(
         if not project or not project.year:
             continue
 
-        year_str = project.year
+        year_str = str(file.created_at.year)
         if year_str not in year_stats:
             year_stats[year_str] = {
                 "individual_items_count": 0,
@@ -686,13 +704,25 @@ def get_user_contributions(
         db.query(ReviewSession, FileAsset, Project)
         .join(FileAsset, ReviewSession.file_asset_id == FileAsset.id)
         .join(Project, FileAsset.project_id == Project.id)
-        .filter(ReviewSession.user_id == user.id, ReviewSession.status == "approved")
+        .filter(
+            ReviewSession.user_id == user.id,
+            ReviewSession.status == "approved",
+            ReviewSession.completed_at.isnot(None),
+            ReviewSession.completed_at >= MIN_HISTORY_AT,
+        )
         .all()
     )
+    if year_int is not None:
+        review_sessions = [row for row in review_sessions if row[0].completed_at and row[0].completed_at.year == year_int]
+    if month is not None:
+        review_sessions = [row for row in review_sessions if row[0].completed_at and row[0].completed_at.month == month]
     for rs, fa, proj in review_sessions:
         if not proj or not proj.year:
             continue
-        year_str = proj.year
+        ts = rs.completed_at or rs.updated_at
+        if ts is None:
+            continue
+        year_str = str(ts.year)
         if year_str not in year_stats:
             year_stats[year_str] = {
                 "individual_items_count": 0,
@@ -727,11 +757,25 @@ def get_user_contributions(
 @router.get("/me/contributions/detail", response_model=List[ContributionDetailItem])
 def get_user_contribution_details(
     year: str | None = None,
+    month: int | None = Query(default=None, ge=1, le=12),
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
     """유저가 기여한 파일 목록(업로드 + 검토 완료)을 반환합니다. year 지정 시 해당 연도만."""
     user = get_current_user(db, x_user_id)
+    if month is not None and not year:
+        raise HTTPException(status_code=400, detail="year is required when month is provided")
+
+    year_int: int | None = None
+    if year:
+        try:
+            year_int = int(year)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid year")
+        if month is not None and (year_int, month) < (MIN_HISTORY_YEAR, MIN_HISTORY_MONTH):
+            raise HTTPException(status_code=400, detail="Only 2026-01 or later is supported")
+        if month is None and year_int < MIN_HISTORY_YEAR:
+            raise HTTPException(status_code=400, detail="Only 2026 or later is supported")
 
     out: list[dict] = []
 
@@ -739,10 +783,12 @@ def get_user_contribution_details(
     upload_query = (
         db.query(FileAsset, Project)
         .join(Project, FileAsset.project_id == Project.id)
-        .filter(FileAsset.uploaded_by_user_id == user.id)
+        .filter(FileAsset.uploaded_by_user_id == user.id, FileAsset.created_at >= MIN_HISTORY_AT)
     )
-    if year:
-        upload_query = upload_query.filter(Project.year == year)
+    if year_int is not None:
+        upload_query = upload_query.filter(extract("year", FileAsset.created_at) == year_int)
+    if month is not None:
+        upload_query = upload_query.filter(extract("month", FileAsset.created_at) == month)
     for fa, proj in upload_query.all():
         out.append(
             {
@@ -761,10 +807,17 @@ def get_user_contribution_details(
         db.query(ReviewSession, FileAsset, Project)
         .join(FileAsset, ReviewSession.file_asset_id == FileAsset.id)
         .join(Project, FileAsset.project_id == Project.id)
-        .filter(ReviewSession.user_id == user.id, ReviewSession.status == "approved")
+        .filter(
+            ReviewSession.user_id == user.id,
+            ReviewSession.status == "approved",
+            ReviewSession.completed_at.isnot(None),
+            ReviewSession.completed_at >= MIN_HISTORY_AT,
+        )
     )
-    if year:
-        review_query = review_query.filter(Project.year == year)
+    if year_int is not None:
+        review_query = review_query.filter(extract("year", ReviewSession.completed_at) == year_int)
+    if month is not None:
+        review_query = review_query.filter(extract("month", ReviewSession.completed_at) == month)
     for rs, fa, proj in review_query.all():
         out.append(
             {

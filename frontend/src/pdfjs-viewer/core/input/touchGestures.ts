@@ -10,13 +10,17 @@ export type TouchGestureOptions = {
   setScale: (next: number) => void;
   clampScale: (n: number) => number;
   /**
-   * Optional pinch-zoom preview hook.
-   * When provided, pinch gestures will NOT call `setScale()` every frame.
-   * Instead, they will call this with a transient CSS-scale ratio for smooth UX,
-   * and commit `setScale()` once on pinch end.
+   * Optional pinch-preview hook.
+   * If provided, pinch move avoids per-frame setScale and uses transient CSS transform.
    */
-  setPinchPreviewScale?: (ratio: number, midClient: { x: number; y: number }) => void;
+  setPinchPreviewScale?: (
+    ratio: number,
+    startMidClient: { x: number; y: number },
+    currentMidClient: { x: number; y: number }
+  ) => void;
   clearPinchPreviewScale?: () => void;
+  /** Optional hook: called when pinch state enters/leaves active mode. */
+  onPinchActiveChange?: (active: boolean) => void;
 };
 
 type Pt = { x: number; y: number };
@@ -40,10 +44,8 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
     dist: number;
     scale: number;
     midClient: Pt;
-    xRect: DOMRect;
-    yRect: DOMRect;
-    xScroll: { left: number };
-    yScroll: { top: number };
+    anchorBaseX: number;
+    anchorBaseY: number;
   } = null;
 
   let raf: number | null = null;
@@ -57,6 +59,8 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
   let lastPanVel: Vel = { vx: 0, vy: 0 };
   let lastPanAt = 0;
   let lastPinch: null | { nextScale: number; midClient: Pt } = null;
+  let lastPinchScaleApplyAt = 0;
+  const pinchScaleIntervalMs = 50;
 
   const stopInertia = () => {
     if (inertiaRaf != null) {
@@ -129,6 +133,51 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
       xLeft: sx?.scrollLeft ?? 0,
       yTop: sy?.scrollTop ?? 0,
     };
+  };
+
+  const applyPinchScaleAndAnchor = (nextScale: number, midClient: Pt) => {
+    if (!pinchStart) return;
+    try {
+      opts.setScale(nextScale);
+    } catch {
+      /* ignore */
+    }
+    const sx = opts.getScrollX();
+    const sy = opts.getScrollY();
+    if (sx) {
+      const xr = sx.getBoundingClientRect?.() ?? el.getBoundingClientRect();
+      const midXInView = midClient.x - xr.left;
+      sx.scrollLeft = pinchStart.anchorBaseX * nextScale - midXInView;
+    }
+    if (sy) {
+      const yr = sy.getBoundingClientRect?.() ?? el.getBoundingClientRect();
+      const midYInView = midClient.y - yr.top;
+      sy.scrollTop = pinchStart.anchorBaseY * nextScale - midYInView;
+    }
+  };
+
+  const applyPinchScaleAndAnchorFrom = (
+    start: { anchorBaseX: number; anchorBaseY: number },
+    nextScale: number,
+    midClient: Pt
+  ) => {
+    try {
+      opts.setScale(nextScale);
+    } catch {
+      /* ignore */
+    }
+    const sx = opts.getScrollX();
+    const sy = opts.getScrollY();
+    if (sx) {
+      const xr = sx.getBoundingClientRect?.() ?? el.getBoundingClientRect();
+      const midXInView = midClient.x - xr.left;
+      sx.scrollLeft = start.anchorBaseX * nextScale - midXInView;
+    }
+    if (sy) {
+      const yr = sy.getBoundingClientRect?.() ?? el.getBoundingClientRect();
+      const midYInView = midClient.y - yr.top;
+      sy.scrollTop = start.anchorBaseY * nextScale - midYInView;
+    }
   };
 
   const dist2 = (a: Pt, b: Pt) => {
@@ -205,49 +254,47 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
 
     if (!pinchStart) {
       const s = readScroll();
+      const startMidXInView = mid.x - s.xRect.left;
+      const startMidYInView = mid.y - s.yRect.top;
+      const anchorContentX = s.xLeft + startMidXInView;
+      const anchorContentY = s.yTop + startMidYInView;
+      const baseScale = Math.max(0.0001, opts.getScale());
       pinchStart = {
         dist: d,
-        scale: opts.getScale(),
+        scale: baseScale,
         midClient: mid,
-        xRect: s.xRect,
-        yRect: s.yRect,
-        xScroll: { left: s.xLeft },
-        yScroll: { top: s.yTop },
+        anchorBaseX: anchorContentX / baseScale,
+        anchorBaseY: anchorContentY / baseScale,
       };
+      try {
+        opts.onPinchActiveChange?.(true);
+      } catch {
+        /* ignore */
+      }
       return;
     }
 
     const ratio = d / Math.max(1, pinchStart.dist);
     const nextScale = opts.clampScale(pinchStart.scale * ratio);
     lastPinch = { nextScale, midClient: mid };
-    // Smooth preview (CSS scale) if enabled; otherwise fall back to immediate setScale.
-    const previewRatio = nextScale / Math.max(0.0001, pinchStart.scale);
     if (opts.setPinchPreviewScale) {
+      const previewRatio = nextScale / Math.max(0.0001, pinchStart.scale);
       try {
-        opts.setPinchPreviewScale(previewRatio, mid);
+        opts.setPinchPreviewScale(previewRatio, pinchStart.midClient, mid);
       } catch {
         /* ignore */
       }
-      // Do NOT update scroll during pinch when using CSS preview: the viewer keeps
-      // the midpoint fixed via transform-origin; updating scroll here would double-apply
-      // and cause wobble + wrong scroll (layout size unchanged during CSS scale).
-    } else {
-      opts.setScale(nextScale);
-      // When not using preview, scroll to keep content under midpoint stable.
-      const sx = opts.getScrollX();
-      const sy = opts.getScrollY();
-      const scaleRatio = previewRatio;
-      if (sx) {
-        const midXInView = mid.x - pinchStart.xRect.left;
-        const contentX = pinchStart.xScroll.left + midXInView;
-        sx.scrollLeft = contentX * scaleRatio - midXInView;
-      }
-      if (sy) {
-        const midYInView = mid.y - pinchStart.yRect.top;
-        const contentY = pinchStart.yScroll.top + midYInView;
-        sy.scrollTop = contentY * scaleRatio - midYInView;
-      }
+      return;
     }
+    // Throttle live relayout work while preserving one canonical coordinate mapping.
+    const now = performance.now();
+    const shouldApplyLive =
+      lastPinchScaleApplyAt === 0 ||
+      now - lastPinchScaleApplyAt >= pinchScaleIntervalMs ||
+      Math.abs(nextScale - opts.getScale()) >= 0.08;
+    if (!shouldApplyLive) return;
+    lastPinchScaleApplyAt = now;
+    applyPinchScaleAndAnchor(nextScale, mid);
   };
 
   const scheduleApply = () => {
@@ -303,21 +350,12 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
     // If a pinch just ended (2->1 or 2->0), commit the scale once.
     if (pinchStart && lastGesture === "pinch" && touches.size < 2 && lastPinch) {
       const finalScale = opts.clampScale(lastPinch.nextScale);
-      const mid = lastPinch.midClient;
-      const baseScale = pinchStart.scale;
-      const xRect = pinchStart.xRect;
-      const yRect = pinchStart.yRect;
-      const xLeft0 = pinchStart.xScroll.left;
-      const yTop0 = pinchStart.yScroll.top;
-      const scaleRatio = finalScale / Math.max(0.0001, baseScale);
-
-      // Apply real scale first so layout updates; then in rAF set scroll and clear CSS preview.
-      // This avoids a frame where preview is cleared but scroll is still wrong (snap-back).
-      try {
-        opts.setScale(finalScale);
-      } catch {
-        /* ignore */
-      }
+      const finalMid = lastPinch.midClient;
+      const startForCommit = {
+        anchorBaseX: pinchStart.anchorBaseX,
+        anchorBaseY: pinchStart.anchorBaseY,
+      };
+      // Final commit in next frame keeps layout measurement and scroll rects in sync.
       try {
         requestAnimationFrame(() => {
           try {
@@ -325,24 +363,29 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
           } catch {
             /* ignore */
           }
-          const sx = opts.getScrollX();
-          const sy = opts.getScrollY();
-          if (sx) {
-            const midXInView = mid.x - xRect.left;
-            const contentX = xLeft0 + midXInView;
-            sx.scrollLeft = contentX * scaleRatio - midXInView;
-          }
-          if (sy) {
-            const midYInView = mid.y - yRect.top;
-            const contentY = yTop0 + midYInView;
-            sy.scrollTop = contentY * scaleRatio - midYInView;
-          }
+          applyPinchScaleAndAnchorFrom(startForCommit, finalScale, finalMid);
         });
       } catch {
         /* ignore */
       }
       pinchStart = null;
       lastPinch = null;
+      lastPinchScaleApplyAt = 0;
+      // If one finger remains after pinch, reseed prev to avoid a jump into pan.
+      if (touches.size === 1) {
+        const key = touches.keys().next().value as number;
+        const pt = touches.get(key);
+        if (pt) {
+          const now = performance.now();
+          prevById.set(key, { x: pt.x, y: pt.y, t: now });
+          velById.set(key, { vx: 0, vy: 0 });
+        }
+      }
+      try {
+        opts.onPinchActiveChange?.(false);
+      } catch {
+        /* ignore */
+      }
       // Do not start inertia from the tail of a pinch.
       lastGesture = "none";
       scheduleApply();
@@ -375,6 +418,12 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
     if (touches.size < 2) {
       pinchStart = null;
       lastPinch = null;
+      lastPinchScaleApplyAt = 0;
+      try {
+        opts.onPinchActiveChange?.(false);
+      } catch {
+        /* ignore */
+      }
       try {
         opts.clearPinchPreviewScale?.();
       } catch {
@@ -410,6 +459,12 @@ export function attachTouchGestures(opts: TouchGestureOptions): () => void {
     velById.clear();
     pinchStart = null;
     lastPinch = null;
+    lastPinchScaleApplyAt = 0;
+    try {
+      opts.onPinchActiveChange?.(false);
+    } catch {
+      /* ignore */
+    }
     try {
       opts.clearPinchPreviewScale?.();
     } catch {

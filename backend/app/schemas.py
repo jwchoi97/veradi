@@ -423,6 +423,25 @@ class LaborDepartmentSummaryOut(BaseModel):
     members: List[LaborMemberSummaryOut]
 
 
+class LaborMyEstimateDepartmentItemOut(BaseModel):
+    department: Department
+    upload_set_count: int
+    content_review_approved_count: int
+    alpha_amount: int
+    upload_unit_amount: int
+    review_unit_amount: int
+    upload_amount: int
+    review_amount: int
+    total_amount: int
+
+
+class LaborMyEstimateOut(BaseModel):
+    year: str
+    month: int
+    departments: List[LaborMyEstimateDepartmentItemOut]
+    total_amount: int
+
+
 class LaborTeamRateUpdateRequest(BaseModel):
     year: str = Field(min_length=1, max_length=10)
     month: int = Field(ge=1, le=12)

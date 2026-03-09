@@ -9,7 +9,7 @@ import io
 import time
 
 from ..mariadb.database import SessionLocal
-from ..mariadb.models import FileAsset, ReviewSession, ReviewComment, User, Project
+from ..mariadb.models import FileAsset, Project, ReviewComment, ReviewSession, User
 from ..schemas import (
     ReviewOut,
     ReviewSessionOut,
@@ -21,7 +21,7 @@ from ..schemas import (
     FileReviewSummariesBulkIn,
     FileReviewSummariesBulkOut,
 )
-from ..authz import ensure_can_manage_project
+from ..authz import ensure_can_access_project
 from .auth import get_current_user
 from ..minio.service import upload_stream, presign_download_url, upload_json, get_json, DEFAULT_BUCKET
 from ..minio.client import ensure_bucket, minio_client
@@ -561,8 +561,7 @@ def get_file_view_url(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # 검토 권한 확인
-    ensure_can_manage_project(user, project)
+    # 조회는 소속팀 무관 허용
 
     # IMPORTANT:
     # Review viewer must render:
@@ -596,7 +595,7 @@ def get_file_inline_url(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    ensure_can_manage_project(user, project)
+    # 조회는 소속팀 무관 허용
     ensure_bucket(DEFAULT_BUCKET)
 
     uid = reviewer_user_id if reviewer_user_id is not None else user.id
@@ -651,7 +650,7 @@ def proxy_file_for_viewer(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    ensure_can_manage_project(user, project)
+    # 조회는 소속팀 무관 허용
 
     try:
         perf_enabled = perf == 1
@@ -902,6 +901,7 @@ def list_individual_question_files_for_review(
         .filter(FileAsset.file_type == "개별문항")
         .filter(FileAsset.original_name.ilike("%.pdf"))
     )
+    # 조회는 소속팀 무관 허용
     if project_id is not None:
         query = query.filter(FileAsset.project_id == project_id)
     files = query.order_by(FileAsset.created_at.desc()).all()
@@ -967,6 +967,7 @@ def list_content_files_for_review(
         .filter(FileAsset.file_type.in_(["문제지", "해설지", "정오표"]))
         .filter(FileAsset.original_name.ilike("%.pdf"))
     )
+    # 조회는 소속팀 무관 허용
     if project_id is not None:
         query = query.filter(FileAsset.project_id == project_id)
     files = query.order_by(FileAsset.created_at.desc()).all()
@@ -1034,10 +1035,7 @@ def get_file_review_summaries_bulk(
         project = file_asset.project
         if not project:
             continue
-        try:
-            ensure_can_manage_project(user, project)
-        except HTTPException:
-            continue
+        # 조회는 소속팀 무관 허용
 
         sessions = (
             db.query(ReviewSession)
@@ -1122,7 +1120,7 @@ def list_file_review_sessions(
     project = file_asset.project
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    ensure_can_manage_project(user, project)
+    # 조회는 소속팀 무관 허용
 
     sessions = (
         db.query(ReviewSession)
@@ -1470,7 +1468,7 @@ def get_pdf_annotations(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    ensure_can_manage_project(user, project)
+    # 조회는 소속팀 무관 허용
 
     # 현재 유저의 세션에서 annotations 로드 (user별 JSON)
     session = db.query(ReviewSession).filter(
@@ -1532,7 +1530,7 @@ def save_pdf_annotations(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    ensure_can_manage_project(user, project)
+    ensure_can_access_project(user, project)
 
     perf_enabled = perf == 1
     t0 = time.perf_counter() if perf_enabled else 0.0
@@ -1641,7 +1639,7 @@ async def bake_review_pdf(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    ensure_can_manage_project(user, project)
+    ensure_can_access_project(user, project)
 
     perf_enabled = perf == 1
     t0 = time.perf_counter() if perf_enabled else 0.0
@@ -1785,7 +1783,7 @@ def add_pdf_annotation(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    ensure_can_manage_project(user, project)
+    ensure_can_access_project(user, project)
 
     session = db.query(ReviewSession).filter(
         ReviewSession.file_asset_id == file_id,

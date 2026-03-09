@@ -10,7 +10,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, B
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from ..authz import ensure_can_manage_project
+from ..authz import ensure_can_access_project
 from ..mariadb.database import SessionLocal
 from ..mariadb.models import Project, FileAsset, Activity, ReviewSession
 from ..minio.service import upload_stream, presign_download_url, delete_objects
@@ -103,9 +103,7 @@ def bulk_download_files_zip(
     projects: List[Project] = db.query(Project).filter(Project.id.in_(project_ids)).all()
     project_by_id = {p.id: p for p in projects}
 
-    # ✅ AuthZ: must be able to manage each involved project
-    for p in projects:
-        ensure_can_manage_project(user, p)
+    # 조회(다운로드)는 소속팀 무관 허용
 
     # Build unique folder names per project (dedup by base name, suffix by id order)
     folder_by_pid = _build_unique_project_folder_map(projects)
@@ -179,7 +177,7 @@ async def upload_project_file(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    ensure_can_manage_project(user, project)
+    ensure_can_access_project(user, project)
 
     if not getattr(project, "slug", None):
         project.slug = build_project_slug(
@@ -258,12 +256,12 @@ def list_project_files(
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
-    user = get_current_user(db, x_user_id)
+    get_current_user(db, x_user_id)
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    ensure_can_manage_project(user, project)
+    # 조회는 소속팀 무관 허용
 
     return (
         db.query(FileAsset)
@@ -280,12 +278,12 @@ def download_project_file(
     db: Session = Depends(get_db),
     x_user_id: str | None = Header(default=None),
 ):
-    user = get_current_user(db, x_user_id)
+    get_current_user(db, x_user_id)
 
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    ensure_can_manage_project(user, project)
+    # 조회(다운로드)는 소속팀 무관 허용
 
     asset = (
         db.query(FileAsset)
@@ -319,7 +317,7 @@ def delete_project_file(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    ensure_can_manage_project(user, project)
+    ensure_can_access_project(user, project)
 
     asset = (
         db.query(FileAsset)

@@ -254,37 +254,50 @@ export default function PdfJsKonvaViewer({
     }
   }, []);
 
-  // Pinch-zoom preview: apply transient CSS transform during pinch and commit scale on end.
-  const pinchPreviewStyleRef = useRef<null | { transform: string; transformOrigin: string; willChange: string }> (null);
-  const setPinchPreviewScale = useCallback((ratio: number, midClient: { x: number; y: number }) => {
-    const el = containerRef.current;
-    if (!el) return;
-    if (!Number.isFinite(ratio) || ratio <= 0) return;
-    const r = el.getBoundingClientRect();
-    const ox = midClient.x - r.left;
-    const oy = midClient.y - r.top;
-
-    try {
-      if (!pinchPreviewStyleRef.current) {
-        pinchPreviewStyleRef.current = {
-          transform: el.style.transform || "",
-          transformOrigin: el.style.transformOrigin || "",
-          willChange: el.style.willChange || "",
-        };
+  // Pinch preview: GPU transform only (no pdf.js relayout while fingers move).
+  const pinchPreviewStyleRef = useRef<null | { transform: string; transformOrigin: string; willChange: string }>(null);
+  const pinchPreviewBaseRectRef = useRef<null | { left: number; top: number }>(null);
+  const setPinchPreviewScale = useCallback(
+    (ratio: number, startMidClient: { x: number; y: number }, currentMidClient: { x: number; y: number }) => {
+      const el = containerRef.current;
+      if (!el) return;
+      if (!Number.isFinite(ratio) || ratio <= 0) return;
+      const r = el.getBoundingClientRect();
+      if (!pinchPreviewBaseRectRef.current) {
+        pinchPreviewBaseRectRef.current = { left: r.left, top: r.top };
       }
-      el.style.willChange = "transform";
-      el.style.transformOrigin = `${Math.max(0, ox)}px ${Math.max(0, oy)}px`;
-      // Keep it light: only scale, no translate (scroll alignment handled in touchGestures).
-      el.style.transform = `scale(${ratio})`;
-    } catch {
-      /* ignore */
-    }
-  }, []);
+      const base = pinchPreviewBaseRectRef.current;
+      const startOx = startMidClient.x - base.left;
+      const startOy = startMidClient.y - base.top;
+      const curOx = currentMidClient.x - base.left;
+      const curOy = currentMidClient.y - base.top;
+      // Keep the pinch-start anchor mapped under the current midpoint:
+      // cur = ratio * start + translate  => translate = cur - ratio * start
+      const tx = curOx - ratio * startOx;
+      const ty = curOy - ratio * startOy;
+      try {
+        if (!pinchPreviewStyleRef.current) {
+          pinchPreviewStyleRef.current = {
+            transform: el.style.transform || "",
+            transformOrigin: el.style.transformOrigin || "",
+            willChange: el.style.willChange || "",
+          };
+        }
+        el.style.willChange = "transform";
+        el.style.transformOrigin = "0 0";
+        el.style.transform = `translate(${tx}px, ${ty}px) scale(${ratio})`;
+      } catch {
+        /* ignore */
+      }
+    },
+    []
+  );
 
   const clearPinchPreviewScale = useCallback(() => {
     const el = containerRef.current;
     const prev = pinchPreviewStyleRef.current;
     pinchPreviewStyleRef.current = null;
+    pinchPreviewBaseRectRef.current = null;
     if (!el || !prev) return;
     try {
       el.style.transform = prev.transform;
@@ -300,14 +313,21 @@ export default function PdfJsKonvaViewer({
   const pendingHeavySyncTimerRef = useRef<number | null>(null);
   const pendingHeightRafRef = useRef<number | null>(null);
   const pendingHeightFromPageTimerRef = useRef<number | null>(null);
+  const pendingScrollIdleTimerRef = useRef<number | null>(null);
   const scheduleUpdateContainerHeightRef = useRef<(() => void) | null>(null);
   const lastScaleChangeAtRef = useRef<number>(0);
+  const scrollingActiveRef = useRef(false);
 
   // Horizontal centering (canvas centered inside its scroll wrapper)
   const scrollParentRef = useRef<HTMLElement | null>(null);
   const scrollParentYRef = useRef<HTMLElement | null>(null);
   const ignoreNextScrollRef = useRef(false);
   const userScrolledHorizRef = useRef(false);
+  const pinchActiveRef = useRef(false);
+
+  const markPinchActive = useCallback((active: boolean) => {
+    pinchActiveRef.current = active;
+  }, []);
 
   const isScrollableY = useCallback((el: HTMLElement | null): boolean => {
     if (!el) return false;
@@ -565,11 +585,6 @@ export default function PdfJsKonvaViewer({
         } catch {
           /* ignore */
         }
-        try {
-          centerCanvasInWrapper();
-        } catch {
-          /* ignore */
-        }
         scheduleHeight();
       });
     };
@@ -582,6 +597,18 @@ export default function PdfJsKonvaViewer({
         pendingHeavySyncTimerRef.current = null;
         runHeavySync();
       }, delayMs);
+    };
+    const markScrollingActive = () => {
+      scrollingActiveRef.current = true;
+      if (pendingScrollIdleTimerRef.current !== null) {
+        window.clearTimeout(pendingScrollIdleTimerRef.current);
+      }
+      pendingScrollIdleTimerRef.current = window.setTimeout(() => {
+        pendingScrollIdleTimerRef.current = null;
+        scrollingActiveRef.current = false;
+        // After scrolling settles, run one consolidated heavy sync.
+        scheduleHeavySync(0);
+      }, 160);
     };
 
     const onPagesInit = () => {
@@ -645,7 +672,9 @@ export default function PdfJsKonvaViewer({
       }
       // 줌 중에는 무거운 작업을 매 tick마다 하지 말고, 잠깐 멈췄을 때 1회 수행
       scheduleHeight();
-      scheduleHeavySync(90);
+      if (!pinchActiveRef.current) {
+        scheduleHeavySync(90);
+      }
     };
     
     eventBus.on("pagesinit", onPagesInit);
@@ -678,6 +707,7 @@ export default function PdfJsKonvaViewer({
       // Only run heavy sync (Konva layout, centerCanvas) when the rendered page is near the current view.
       // Otherwise distant page loads cause the visible page to flicker.
       if (performance.now() - lastScaleChangeAtRef.current > 250) {
+        if (scrollingActiveRef.current) return;
         const nearCurrent =
           typeof pageNumber === "number" &&
           Number.isFinite(currentPage) &&
@@ -694,6 +724,11 @@ export default function PdfJsKonvaViewer({
       scheduleHeight();
     });
     resizeObserver.observe(viewer);
+
+    const onAnyScroll = () => {
+      markScrollingActive();
+    };
+    window.addEventListener("scroll", onAnyScroll, { passive: true, capture: true });
 
     // PDFViewer 초기화 완료 표시
     setViewerReady(true);
@@ -715,11 +750,17 @@ export default function PdfJsKonvaViewer({
         window.clearTimeout(pendingHeavySyncTimerRef.current);
         pendingHeavySyncTimerRef.current = null;
       }
+      if (pendingScrollIdleTimerRef.current !== null) {
+        window.clearTimeout(pendingScrollIdleTimerRef.current);
+        pendingScrollIdleTimerRef.current = null;
+      }
+      scrollingActiveRef.current = false;
       scheduleUpdateContainerHeightRef.current = null;
       eventBus.off("pagesinit", onPagesInit);
       eventBus.off("pagechanging", onPageChange);
       eventBus.off("scalechanging", onScaleChange);
       eventBus.off("pagerendered", onPageRendered);
+      window.removeEventListener("scroll", onAnyScroll as any, true as any);
       container.removeEventListener("wheel", handleWheel);
       if (sp) sp.removeEventListener("scroll", onScroll as any);
       resizeObserver.disconnect();
@@ -737,7 +778,7 @@ export default function PdfJsKonvaViewer({
       pdfViewerRef.current = null;
       setViewerReady(false);
     };
-  }, [eventBus, linkService, clampScale, centerCanvasInWrapper, getScrollParentX, getScrollParentY, setPinchPreviewScale, clearPinchPreviewScale]);
+  }, [eventBus, linkService, clampScale, centerCanvasInWrapper, getScrollParentX, getScrollParentY]);
 
   // PDF 로드 (PDFViewer 초기화 완료 후)
   useEffect(() => {
@@ -886,6 +927,7 @@ export default function PdfJsKonvaViewer({
   useEffect(() => {
     if (!viewerReady) return;
     const computeVisiblePage = () => {
+      if (pinchActiveRef.current) return;
       if (performance.now() < programmaticNavUntilRef.current) return;
       const pv = pdfViewerRef.current;
       const root = viewerRef.current;
@@ -1087,6 +1129,7 @@ export default function PdfJsKonvaViewer({
               clampScale,
               setPinchPreviewScale,
               clearPinchPreviewScale,
+              onPinchActiveChange: markPinchActive,
             });
             cleanupFns.push(detach);
           }
@@ -1107,7 +1150,7 @@ export default function PdfJsKonvaViewer({
       }
       cleanupFns = [];
     };
-  }, [viewerReady, docReady, fileId, getScrollParentX, getScrollParentY, clampScale]);
+  }, [viewerReady, docReady, fileId, getScrollParentX, getScrollParentY, clampScale, setPinchPreviewScale, clearPinchPreviewScale, markPinchActive]);
 
   // 모드/툴 설정 반영
   useEffect(() => {

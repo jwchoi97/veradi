@@ -24,6 +24,8 @@ from ..schemas import (
     LaborAccessibleTeamsOut,
     LaborAlphaUpdateRequest,
     LaborDepartmentSummaryOut,
+    LaborMyEstimateDepartmentItemOut,
+    LaborMyEstimateOut,
     LaborManagerAssignmentOut,
     LaborManagerAssignmentRequest,
     LaborMemberSummaryOut,
@@ -35,6 +37,9 @@ router = APIRouter(prefix="/labor", tags=["labor"])
 
 UPLOAD_UNIT_WON = 70000
 REVIEW_UNIT_WON = 70000
+MIN_HISTORY_YEAR = 2026
+MIN_HISTORY_MONTH = 1
+MIN_HISTORY_AT = datetime(2026, 1, 1)
 
 
 def _default_year() -> str:
@@ -87,6 +92,11 @@ def _ensure_not_future_period(year: int, month: int) -> None:
     cy, cm = _current_period()
     if (year, month) > (cy, cm):
         raise HTTPException(status_code=400, detail="Future period is not allowed")
+
+
+def _ensure_supported_period(year: int, month: int) -> None:
+    if (year, month) < (MIN_HISTORY_YEAR, MIN_HISTORY_MONTH):
+        raise HTTPException(status_code=400, detail="Only 2026-01 or later is supported")
 
 
 def _ensure_current_period_for_update(year: int, month: int) -> None:
@@ -269,6 +279,7 @@ def _build_upload_set_counts(
             FileAsset.file_type == "개별문항",
             FileAsset.set_index.isnot(None),
             Project.subject == department,
+            FileAsset.created_at >= MIN_HISTORY_AT,
             extract("year", FileAsset.created_at) == year,
             extract("month", FileAsset.created_at) == month,
         )
@@ -311,6 +322,7 @@ def _build_content_review_counts(
             FileAsset.file_type != "개별문항",
             Project.subject == department,
             ReviewSession.completed_at.isnot(None),
+            ReviewSession.completed_at >= MIN_HISTORY_AT,
             extract("year", ReviewSession.completed_at) == year,
             extract("month", ReviewSession.completed_at) == month,
         )
@@ -340,6 +352,7 @@ def get_department_labor_member_summary(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid year")
     target_month = month if month is not None else now.month
+    _ensure_supported_period(target_year_int, target_month)
     _ensure_not_future_period(target_year_int, target_month)
     period_key = _period_key(target_year_int, target_month)
     upload_unit_amount, review_unit_amount = _get_or_default_team_rates(db, department, target_year_int, target_month)
@@ -404,6 +417,94 @@ def get_department_labor_member_summary(
     )
 
 
+@router.get("/me/estimate", response_model=LaborMyEstimateOut)
+def get_my_current_month_labor_estimate(
+    year: str | None = Query(default=None),
+    month: int | None = Query(default=None, ge=1, le=12),
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    """
+    로그인 유저의 지정 월(기본: 이번달) 예상 인건비를 반환합니다.
+    부서(과목)별 금액과 전체 합계를 함께 제공합니다.
+    """
+    user = get_current_user(db, x_user_id)
+    now = datetime.utcnow()
+    target_year_str = (year or "").strip() or str(now.year)
+    try:
+        target_year_int = int(target_year_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid year")
+    target_month = month if month is not None else now.month
+    _ensure_supported_period(target_year_int, target_month)
+    _ensure_not_future_period(target_year_int, target_month)
+    period_key = _period_key(target_year_int, target_month)
+
+    departments = set(user.departments_set())
+    if user.department:
+        departments.add(user.department)
+
+    items: list[LaborMyEstimateDepartmentItemOut] = []
+    for department in sorted(departments, key=_department_label_sort_key):
+        upload_unit_amount, review_unit_amount = _get_or_default_team_rates(
+            db, department, target_year_int, target_month
+        )
+
+        upload_set_count = int(
+            _build_upload_set_counts(
+                db=db,
+                department=department,
+                year=target_year_int,
+                month=target_month,
+                member_ids=[user.id],
+            ).get(user.id, 0)
+        )
+        content_review_count = int(
+            _build_content_review_counts(
+                db=db,
+                department=department,
+                year=target_year_int,
+                month=target_month,
+                member_ids=[user.id],
+            ).get(user.id, 0)
+        )
+
+        alpha_row = (
+            db.query(LaborAlpha)
+            .filter(
+                LaborAlpha.department == department,
+                LaborAlpha.year == period_key,
+                LaborAlpha.member_user_id == user.id,
+            )
+            .first()
+        )
+        alpha_amount = int(alpha_row.alpha_amount) if alpha_row is not None else 0
+
+        upload_amount = upload_set_count * upload_unit_amount
+        review_amount = content_review_count * (review_unit_amount + alpha_amount)
+        items.append(
+            LaborMyEstimateDepartmentItemOut(
+                department=department,
+                upload_set_count=upload_set_count,
+                content_review_approved_count=content_review_count,
+                alpha_amount=alpha_amount,
+                upload_unit_amount=upload_unit_amount,
+                review_unit_amount=review_unit_amount,
+                upload_amount=upload_amount,
+                review_amount=review_amount,
+                total_amount=upload_amount + review_amount,
+            )
+        )
+
+    total_amount = sum(item.total_amount for item in items)
+    return LaborMyEstimateOut(
+        year=str(target_year_int),
+        month=target_month,
+        departments=items,
+        total_amount=total_amount,
+    )
+
+
 @router.put("/{department}/members/{member_id}/alpha", response_model=dict)
 def update_member_alpha(
     department: Department,
@@ -418,6 +519,7 @@ def update_member_alpha(
         target_year_int = int(payload.year.strip())
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid year")
+    _ensure_supported_period(target_year_int, payload.month)
     _ensure_not_future_period(target_year_int, payload.month)
     _ensure_current_period_for_update(target_year_int, payload.month)
     target_period_key = _period_key(target_year_int, payload.month)
@@ -477,6 +579,7 @@ def upsert_department_team_rates(
         target_year_int = int(payload.year.strip())
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid year")
+    _ensure_supported_period(target_year_int, payload.month)
     _ensure_not_future_period(target_year_int, payload.month)
     _ensure_current_period_for_update(target_year_int, payload.month)
     target_period_key = _period_key(target_year_int, payload.month)

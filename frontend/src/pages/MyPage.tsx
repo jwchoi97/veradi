@@ -7,11 +7,13 @@ import {
   updateUserInfo,
   getUserContributions,
   getContributionDetails,
+  getMyLaborEstimate,
   uploadProfileImage,
   deleteProfileImage,
   type UserInfo,
   type ContributionStats,
   type ContributionDetailItem,
+  type MyLaborEstimate,
 } from "@/data/files/api";
 import { prettyDepartment } from "@/data/departments";
 
@@ -62,6 +64,28 @@ function getInitials(name?: string | null): string {
     return trimmed.slice(0, 2).toUpperCase();
   }
   return trimmed.toUpperCase();
+}
+
+type YearMonthOption = { key: string; year: string; month: number; label: string };
+
+function getPeriodOptionsFrom2026(): YearMonthOption[] {
+  const now = new Date();
+  const options: YearMonthOption[] = [];
+  const cursor = new Date(now.getFullYear(), now.getMonth(), 1);
+  const min = new Date(2026, 0, 1); // 2026-01
+
+  while (cursor >= min) {
+    const y = cursor.getFullYear();
+    const m = cursor.getMonth() + 1;
+    options.push({
+      key: `${y}-${m}`,
+      year: String(y),
+      month: m,
+      label: `${y}년 ${m}월`,
+    });
+    cursor.setMonth(cursor.getMonth() - 1);
+  }
+  return options;
 }
 
 function ContributionDetailRow({ item }: { item: ContributionDetailItem }) {
@@ -185,123 +209,49 @@ function ContributionChart({
 
   const indReview = stat.individual_items_review_count ?? 0;
   const contentReview = stat.content_review_count ?? 0;
-  const maxValue = Math.max(
-    stat.individual_items_count,
-    stat.content_files_count,
-    stat.total_files_count,
-    indReview,
-    contentReview,
-    1
-  );
-  const individualPercent = maxValue > 0 ? (stat.individual_items_count / maxValue) * 100 : 0;
-  const contentPercent = maxValue > 0 ? (stat.content_files_count / maxValue) * 100 : 0;
-  const individualReviewPercent = maxValue > 0 ? (indReview / maxValue) * 100 : 0;
-  const contentReviewPercent = maxValue > 0 ? (contentReview / maxValue) * 100 : 0;
+  const rows: Array<{
+    key: ContributionDetailCategory;
+    label: string;
+    count: number;
+  }> = [
+    { key: "individual_upload", label: "개별 문항 (업로드)", count: stat.individual_items_count },
+    { key: "individual_review", label: "개별 문항 (검토)", count: indReview },
+    { key: "content_upload", label: "콘텐츠 (업로드)", count: stat.content_files_count },
+    { key: "content_review", label: "콘텐츠 (검토)", count: contentReview },
+  ];
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-base font-semibold text-gray-900">{stat.year}년</h3>
-        <span className="text-sm text-gray-600">업로드 총 {stat.total_files_count}개</span>
-      </div>
-
-      <div className="space-y-2">
-        <div>
-          <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-600">
-            <span>개별 문항 (업로드)</span>
-            <span className="flex items-center gap-1.5">
-              <span className="font-medium text-indigo-600">{stat.individual_items_count}개</span>
-              {stat.individual_items_count > 0 && (
-                <button
-                  type="button"
-                  onClick={() => openDetail("individual_upload")}
-                  className="text-indigo-600 underline hover:no-underline"
-                >
-                  자세히 보기
-                </button>
-              )}
-            </span>
-          </div>
-          <div className="h-6 w-full overflow-hidden rounded-full bg-gray-100">
-            <div
-              className="h-full rounded-full bg-indigo-500 transition-all"
-              style={{ width: `${individualPercent}%` }}
-            />
-          </div>
-        </div>
-
-        <div>
-          <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-600">
-            <span>개별 문항 (검토)</span>
-            <span className="flex items-center gap-1.5">
-              <span className="font-medium text-indigo-400">{indReview}개</span>
-              {indReview > 0 && (
-                <button
-                  type="button"
-                  onClick={() => openDetail("individual_review")}
-                  className="text-indigo-500 underline hover:no-underline"
-                >
-                  자세히 보기
-                </button>
-              )}
-            </span>
-          </div>
-          <div className="h-6 w-full overflow-hidden rounded-full bg-gray-100">
-            <div
-              className="h-full rounded-full bg-indigo-400 transition-all"
-              style={{ width: `${individualReviewPercent}%` }}
-            />
-          </div>
-        </div>
-
-        <div>
-          <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-600">
-            <span>콘텐츠 (업로드)</span>
-            <span className="flex items-center gap-1.5">
-              <span className="font-medium text-green-600">{stat.content_files_count}개</span>
-              {stat.content_files_count > 0 && (
-                <button
-                  type="button"
-                  onClick={() => openDetail("content_upload")}
-                  className="text-green-600 underline hover:no-underline"
-                >
-                  자세히 보기
-                </button>
-              )}
-            </span>
-          </div>
-          <div className="h-6 w-full overflow-hidden rounded-full bg-gray-100">
-            <div
-              className="h-full rounded-full bg-green-500 transition-all"
-              style={{ width: `${contentPercent}%` }}
-            />
-          </div>
-        </div>
-
-        <div>
-          <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-600">
-            <span>콘텐츠 (검토)</span>
-            <span className="flex items-center gap-1.5">
-              <span className="font-medium text-green-400">{contentReview}개</span>
-              {contentReview > 0 && (
-                <button
-                  type="button"
-                  onClick={() => openDetail("content_review")}
-                  className="text-green-500 underline hover:no-underline"
-                >
-                  자세히 보기
-                </button>
-              )}
-            </span>
-          </div>
-          <div className="h-6 w-full overflow-hidden rounded-full bg-gray-100">
-            <div
-              className="h-full rounded-full bg-green-400 transition-all"
-              style={{ width: `${contentReviewPercent}%` }}
-            />
-          </div>
-        </div>
-      </div>
+    <div className="overflow-hidden rounded-xl border border-gray-200">
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50 text-gray-600">
+          <tr>
+            <th className="px-4 py-2 text-left font-medium">항목</th>
+            <th className="px-4 py-2 text-right font-medium">개수</th>
+            <th className="px-4 py-2 text-right font-medium">상세</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {rows.map((row) => (
+            <tr key={row.key} className="bg-white">
+              <td className="px-4 py-2 text-gray-800">{row.label}</td>
+              <td className="px-4 py-2 text-right font-medium text-gray-900">{row.count}개</td>
+              <td className="px-4 py-2 text-right">
+                {row.count > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => openDetail(row.key)}
+                    className="text-indigo-600 underline hover:no-underline"
+                  >
+                    자세히 보기
+                  </button>
+                ) : (
+                  <span className="text-gray-400">-</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -326,11 +276,29 @@ export default function MyPage() {
   const [detailModalCategory, setDetailModalCategory] = useState<ContributionDetailCategory | null>(null);
   const [detailItems, setDetailItems] = useState<ContributionDetailItem[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [laborEstimate, setLaborEstimate] = useState<MyLaborEstimate | null>(null);
+  const [laborEstimateLoading, setLaborEstimateLoading] = useState(false);
+  const periodOptions = useMemo(() => getPeriodOptionsFrom2026(), []);
+  const [selectedLaborPeriodKey, setSelectedLaborPeriodKey] = useState(periodOptions[0]?.key ?? "");
+  const [selectedContributionPeriodKey, setSelectedContributionPeriodKey] = useState(periodOptions[0]?.key ?? "");
+  const selectedLaborPeriod = useMemo(
+    () => periodOptions.find((opt) => opt.key === selectedLaborPeriodKey) ?? null,
+    [periodOptions, selectedLaborPeriodKey]
+  );
+  const isCurrentLaborPeriod = useMemo(() => {
+    if (!selectedLaborPeriod) return false;
+    const now = new Date();
+    return (
+      Number(selectedLaborPeriod.year) === now.getFullYear() &&
+      selectedLaborPeriod.month === now.getMonth() + 1
+    );
+  }, [selectedLaborPeriod]);
 
   useEffect(() => {
     void loadUserInfo();
-    void loadContributions();
   }, []);
+
+  const formatWon = (amount: number) => `${amount.toLocaleString("ko-KR")}원`;
 
   const loadUserInfo = async () => {
     try {
@@ -352,16 +320,11 @@ export default function MyPage() {
     }
   };
 
-  const loadContributions = async (year?: string | null) => {
+  const loadContributions = async (year?: string, month?: number) => {
     try {
       setContributionsLoading(true);
-      const data = await getUserContributions(year || undefined);
+      const data = await getUserContributions(year, month);
       setAllContributions(data);
-      
-      // 첫 로드 시 가장 최근 년도 선택
-      if (data.length > 0 && !selectedYear) {
-        setSelectedYear(data[0].year);
-      }
     } catch (e) {
       console.error(e);
       // 기여도 로딩 실패는 조용히 처리
@@ -369,6 +332,32 @@ export default function MyPage() {
       setContributionsLoading(false);
     }
   };
+
+  const loadMyLaborEstimate = async (year?: string, month?: number) => {
+    try {
+      setLaborEstimateLoading(true);
+      const data = await getMyLaborEstimate(year, month);
+      setLaborEstimate(data);
+    } catch (e) {
+      console.error(e);
+      setLaborEstimate(null);
+    } finally {
+      setLaborEstimateLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const selected = periodOptions.find((opt) => opt.key === selectedLaborPeriodKey);
+    if (!selected) return;
+    void loadMyLaborEstimate(selected.year, selected.month);
+  }, [selectedLaborPeriodKey, periodOptions]);
+
+  useEffect(() => {
+    const selected = periodOptions.find((opt) => opt.key === selectedContributionPeriodKey);
+    if (!selected) return;
+    setSelectedYear(selected.year);
+    void loadContributions(selected.year, selected.month);
+  }, [selectedContributionPeriodKey, periodOptions]);
 
   // 선택된 년도에 해당하는 기여도 데이터
   const currentContribution = useMemo(() => {
@@ -379,7 +368,8 @@ export default function MyPage() {
   const loadDetail = async () => {
     try {
       setDetailLoading(true);
-      const data = await getContributionDetails(selectedYear || undefined);
+      const selected = periodOptions.find((opt) => opt.key === selectedContributionPeriodKey);
+      const data = await getContributionDetails(selected?.year, selected?.month);
       setDetailItems(data);
     } catch (e) {
       console.error(e);
@@ -398,8 +388,8 @@ export default function MyPage() {
 
   // 연도 변경 시 모달이 열려 있으면 목록 다시 로드
   useEffect(() => {
-    if (detailModalCategory != null && selectedYear) void loadDetail();
-  }, [selectedYear]);
+    if (detailModalCategory != null) void loadDetail();
+  }, [selectedContributionPeriodKey]);
 
   const handleSave = async () => {
     if (!userInfo) return;
@@ -692,29 +682,69 @@ export default function MyPage() {
 
         {/* 기여도 그래프 섹션 */}
         <div className="lg:col-span-2">
-          <section className="rounded-3xl border border-slate-200/60 bg-white/80 p-6 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.55)] backdrop-blur">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold tracking-tight">기여도</h2>
-              {allContributions.length > 0 && (
+          <section className="mb-6 rounded-3xl border border-slate-200/60 bg-white p-6 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.55)]">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-lg font-semibold tracking-tight text-slate-900">
+                {isCurrentLaborPeriod ? "용역료 (예상)" : "용역료"}
+              </h2>
+              <div className="flex items-center gap-2">
+                {laborEstimate && (
+                  <span className="text-xs text-gray-600">
+                    {laborEstimate.year}년 {laborEstimate.month}월 기준
+                  </span>
+                )}
                 <select
-                  value={selectedYear || ""}
-                  onChange={(e) => {
-                    const year = e.target.value || null;
-                    setSelectedYear(year);
-                    if (year) {
-                      void loadContributions(year);
-                    }
-                  }}
+                  value={selectedLaborPeriodKey}
+                  onChange={(e) => setSelectedLaborPeriodKey(e.target.value)}
                   className="rounded-xl border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
                 >
-                  <option value="">전체</option>
-                  {allContributions.map((c) => (
-                    <option key={c.year} value={c.year}>
-                      {c.year}년
+                  {periodOptions.map((opt) => (
+                    <option key={opt.key} value={opt.key}>
+                      {opt.label}
                     </option>
                   ))}
                 </select>
-              )}
+              </div>
+            </div>
+            {laborEstimateLoading ? (
+              <div className="text-sm text-gray-600">용역료 계산 중...</div>
+            ) : laborEstimate ? (
+              <>
+                <div className="text-2xl font-bold text-slate-900">
+                  {formatWon(laborEstimate.total_amount)}
+                </div>
+                {laborEstimate.departments.length > 0 ? (
+                  <div className="mt-3 space-y-1 text-sm text-gray-700">
+                    {laborEstimate.departments.map((item) => (
+                      <div key={item.department} className="flex items-center justify-between">
+                        <span>{prettyDepartment(item.department)}</span>
+                        <span className="font-medium">{formatWon(item.total_amount)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-2 text-sm text-gray-600">해당 월 집계된 인건비 항목이 없습니다.</div>
+                )}
+              </>
+            ) : (
+              <div className="text-sm text-gray-600">용역료 정보를 불러오지 못했습니다.</div>
+            )}
+          </section>
+
+          <section className="rounded-3xl border border-slate-200/60 bg-white/80 p-6 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.55)] backdrop-blur">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold tracking-tight">기여도</h2>
+              <select
+                value={selectedContributionPeriodKey}
+                onChange={(e) => setSelectedContributionPeriodKey(e.target.value)}
+                className="rounded-xl border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+              >
+                {periodOptions.map((opt) => (
+                  <option key={opt.key} value={opt.key}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
             </div>
             {contributionsLoading ? (
               <div className="text-gray-500 text-sm">기여도 데이터를 불러오는 중...</div>
@@ -725,7 +755,7 @@ export default function MyPage() {
               open={detailModalCategory != null}
               onClose={closeDetailModal}
               category={detailModalCategory}
-              yearLabel={selectedYear ? `${selectedYear}년` : "전체"}
+              yearLabel={periodOptions.find((opt) => opt.key === selectedContributionPeriodKey)?.label || "선택 기간"}
               items={detailItems}
               loading={detailLoading}
             />
