@@ -62,6 +62,8 @@ export class KonvaAnnotationManager {
   private viewOffset = { x: 0, y: 0 }; // document coords of viewport top-left
   private viewportSyncRaf: number | null = null;
   private viewportCleanupFns: Array<() => void> = [];
+  private lastLayoutSyncAt = 0;
+  private layoutSyncThrottleMs = 80;
 
   private selectedNodes: Konva.Node[] = [];
   private activePage: number | null = null;
@@ -159,7 +161,10 @@ export class KonvaAnnotationManager {
         ov === "scroll" ||
         el.classList.toString().includes(axis === "x" ? "overflow-x-auto" : "overflow-y-auto") ||
         el.classList.toString().includes(axis === "x" ? "overflow-x-scroll" : "overflow-y-scroll");
-      return hasOverflowStyle;
+      if (!hasOverflowStyle) return false;
+      // For Y: match PdfJsKonvaViewer - use only actually scrollable elements so clip aligns with real scroll.
+      if (axis === "y" && el.scrollHeight <= el.clientHeight + 2) return false;
+      return true;
     } catch {
       return false;
     }
@@ -167,8 +172,7 @@ export class KonvaAnnotationManager {
 
   private getScrollParent(axis: "x" | "y"): HTMLElement | null {
     // Find nearest clip/scroll container ancestor for the axis.
-    // We key off overflow style (not current scrollability) because the element still defines the viewport.
-    // For Y, fall back to document.scrollingElement.
+    // For Y, use same logic as PdfJsKonvaViewer (actually scrollable) so viewport clip matches.
     try {
       let el: HTMLElement | null = this.container.parentElement as HTMLElement | null;
       while (el) {
@@ -236,7 +240,8 @@ export class KonvaAnnotationManager {
     const cr = this.container.getBoundingClientRect?.();
     if (!clip || !cr) return;
 
-    // Viewport in document-space coordinates (container-local, same space as pageMetrics)
+    // Viewport in document-space coordinates (container-local, same space as pageMetrics).
+    // Must match PageLayoutProvider: page positions use (pr - cr), so viewport offset = (clip - cr).
     const rawX = clip.left - cr.left;
     const rawY = clip.top - cr.top;
     const rawW = clip.right - clip.left;
@@ -477,7 +482,19 @@ export class KonvaAnnotationManager {
     // Note: scroll events do NOT bubble, so we must listen on each scroll container directly.
     // window scroll catches document scroll; x-scroll div (pdf-viewer-xscroll) needs its own listener.
     try {
-      const onViewportChange = () => this.scheduleViewportSync();
+      const onViewportChange = () => {
+        this.scheduleViewportSync();
+        // During scroll, periodically refresh page metrics so annotations stay aligned with PDF.
+        const now = performance.now();
+        if (now - this.lastLayoutSyncAt >= this.layoutSyncThrottleMs) {
+          this.lastLayoutSyncAt = now;
+          try {
+            this.updatePagesFromPdfLayout({ padding: 16, gap: 14 });
+          } catch {
+            /* ignore */
+          }
+        }
+      };
       window.addEventListener("scroll", onViewportChange, { passive: true, capture: true });
       window.addEventListener("resize", onViewportChange, { passive: true });
       const ro = new ResizeObserver(onViewportChange);
