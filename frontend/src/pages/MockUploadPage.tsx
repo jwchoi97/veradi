@@ -802,7 +802,7 @@ export default function MockUploadPage() {
   };
 
   return (
-    <div className="w-full min-h-[calc(100vh-64px)] px-4 md:px-6 py-4 text-gray-900 space-y-4">
+    <div className="w-full min-h-app-main px-4 md:px-6 py-4 text-gray-900 space-y-4">
       <div className="flex items-start justify-between gap-3">
         <h1 className="text-2xl font-bold tracking-tight">콘텐츠 업로드</h1>
 
@@ -1657,7 +1657,7 @@ export function UploadButton({ onClick }: { onClick: () => void }) {
 //   };
 
 //   return (
-//     <div className="w-full min-h-[calc(100vh-64px)] px-4 md:px-6 py-4 text-gray-900 space-y-4">
+//     <div className="w-full min-h-app-main px-4 md:px-6 py-4 text-gray-900 space-y-4">
 //       <div className="flex items-start justify-between gap-3">
 //         <h1 className="text-2xl font-bold tracking-tight">모의고사 업로드</h1>
 

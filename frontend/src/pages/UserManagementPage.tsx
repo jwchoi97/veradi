@@ -186,7 +186,7 @@ export default function UserManagementPage() {
   }
 
   return (
-    <div className="w-full min-h-[calc(100vh-64px)] px-4 md:px-6 py-4 text-gray-900 space-y-4">
+    <div className="w-full min-h-app-main px-4 md:px-6 py-4 text-gray-900 space-y-4">
       {/* 상단 헤더: 프로젝트 관리와 동일 컨셉 */}
       <section className="rounded-3xl border border-slate-200/60 bg-white/80 p-5 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.55)] backdrop-blur flex items-center justify-between">
         <div>

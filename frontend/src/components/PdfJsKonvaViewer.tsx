@@ -1114,12 +1114,11 @@ export default function PdfJsKonvaViewer({
         mgr.updatePagesFromPdfLayout({ padding: 16, gap: 14 });
 
         // Touch gestures (tablet): finger = scroll/pinch, pen/mouse = annotation interactions.
-        // Attach to Konva stage container which sits above the PDF canvases.
+        // Attach to container (not stage) so gestures receive events in highlight mode too (stage has pointer-events:none).
         try {
-          const stageEl = container.querySelector("#konva-stage-container") as HTMLElement | null;
-          if (stageEl) {
+          if (container) {
             const detach = attachTouchGestures({
-              element: stageEl,
+              element: container,
               getScrollX: getScrollParentX,
               getScrollY: getScrollParentY,
               getScale: () => Number(pdfViewer.currentScale || 1),

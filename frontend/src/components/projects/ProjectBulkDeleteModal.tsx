@@ -192,7 +192,7 @@ export default function ProjectBulkDeleteModal({
 //   };
 
 //   return (
-//     <div className="w-full min-h-[calc(100vh-64px)] px-4 md:px-6 py-4 text-gray-900 space-y-4">
+//     <div className="w-full min-h-app-main px-4 md:px-6 py-4 text-gray-900 space-y-4">
 //       <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm flex items-center justify-between">
 //         <div>
 //           <h1 className="text-xl font-semibold">프로젝트 관리자 페이지</h1>

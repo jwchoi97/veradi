@@ -494,7 +494,7 @@ export default function MyPage() {
 
   if (loading) {
     return (
-      <div className="flex min-h-[calc(100vh-64px)] items-center justify-center">
+      <div className="flex min-h-app-main items-center justify-center">
         <div className="text-gray-500">로딩 중...</div>
       </div>
     );
@@ -502,14 +502,14 @@ export default function MyPage() {
 
   if (!userInfo) {
     return (
-      <div className="flex min-h-[calc(100vh-64px)] items-center justify-center">
+      <div className="flex min-h-app-main items-center justify-center">
         <div className="text-red-500">유저 정보를 불러올 수 없습니다.</div>
       </div>
     );
   }
 
   return (
-    <div className="w-full min-h-[calc(100vh-64px)] px-4 md:px-6 py-4 text-gray-900 space-y-6">
+    <div className="w-full min-h-app-main px-4 md:px-6 py-4 text-gray-900 space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">마이 페이지</h1>
         <p className="mt-1 text-sm text-gray-600">계정 정보와 기여도를 확인하고 관리합니다.</p>

@@ -513,7 +513,7 @@ export class KonvaAnnotationManager {
     }
     this.applyViewportSync();
 
-    // When highlight mode is active: mouse/touch use native selection; pen uses programmatic selection (no long-press).
+    // When highlight mode is active: mouse uses native selection; pen/touch use programmatic selection (no long-press on pad).
     try {
       this.highlightSelectionCleanup?.();
     } catch {
@@ -528,11 +528,25 @@ export class KonvaAnnotationManager {
       document.addEventListener("mouseup", applyHighlightsIfHighlightMode, { capture: true });
       document.addEventListener("pointerup", applyHighlightsIfHighlightMode, { capture: true });
 
+      const isLikelyStylusTouch = (e: PointerEvent): boolean => {
+        // Some pads report stylus as "touch". Finger usually has larger contact area.
+        if (getPointerKind(e) !== "touch") return false;
+        const w = Number((e as any).width || 0);
+        const h = Number((e as any).height || 0);
+        if (!Number.isFinite(w) || !Number.isFinite(h)) return false;
+        return w > 0 && h > 0 && w <= 8 && h <= 8;
+      };
+
       const onPenPointerDown = (e: PointerEvent) => {
-        if (this.currentMode !== "highlight" || getPointerKind(e) !== "pen") return;
+        if (this.currentMode !== "highlight") return;
+        const isPen = getPointerKind(e) === "pen";
+        const isStylusTouch = isLikelyStylusTouch(e);
+        if (!isPen && !isStylusTouch) return; // finger touch: scroll/pinch only
+        if (this.penHighlightSelecting && e.pointerId !== this.penHighlightPointerId) return;
         if (!this.container.contains(e.target as Node)) return;
         const range = this.getRangeAtPoint(e.clientX, e.clientY);
         if (!range) {
+          // Empty area: stylus should not scroll in highlight mode
           e.preventDefault();
           e.stopPropagation();
           this.penHighlightSuppressingScroll = e.pointerId;
@@ -546,11 +560,20 @@ export class KonvaAnnotationManager {
           }
           return;
         }
+        // Touched text: block selection (pen only); lift pen → highlight behind text
         e.preventDefault();
         e.stopPropagation();
         this.penHighlightAnchor = { node: range.startContainer, offset: range.startOffset };
         this.penHighlightPointerId = e.pointerId;
         this.penHighlightSelecting = true;
+        try {
+          const target = e.target as Element | undefined;
+          if (target?.setPointerCapture && typeof e.pointerId === "number") {
+            target.setPointerCapture(e.pointerId);
+          }
+        } catch {
+          /* ignore */
+        }
         const sel = window.getSelection();
         if (sel) {
           sel.removeAllRanges();
@@ -1739,6 +1762,7 @@ export class KonvaAnnotationManager {
       layer.style.pointerEvents = "none";
       // Force behind textLayer regardless of pdf.js defaults.
       layer.style.zIndex = "0";
+      // Keep classic highlighter look behind text.
       layer.style.mixBlendMode = "multiply";
       // Make sure the page itself is a positioning context.
       try {
@@ -2125,6 +2149,7 @@ export class KonvaAnnotationManager {
       for (const [pageNum, anns] of createdByPage.entries()) {
         const g = this.getOrCreatePageGroup(pageNum);
         for (const ann of anns) this.loadAnnotationToGroup(ann, g, pageNum);
+        this.refreshHighlightDomForPage(pageNum);
       }
 
       this.contentLayer?.batchDraw();

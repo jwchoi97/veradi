@@ -696,7 +696,7 @@ export default function IndividualItemUploadPage() {
   };
 
   return (
-    <div className="w-full min-h-[calc(100vh-64px)] px-4 md:px-6 py-4 text-gray-900 space-y-4">
+    <div className="w-full min-h-app-main px-4 md:px-6 py-4 text-gray-900 space-y-4">
       <div className="flex items-start justify-between gap-3">
         <h1 className="text-2xl font-bold tracking-tight">개별 문항 업로드</h1>
 

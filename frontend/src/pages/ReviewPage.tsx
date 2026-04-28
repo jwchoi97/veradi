@@ -252,7 +252,7 @@ export default function ReviewPage() {
 
   return (
     // TopBar(56px) 아래를 꽉 채우고, AppLayout의 main padding(20px)을 상쇄
-    <div className="h-[calc(100vh-56px)] -m-5 p-4 pt-3 min-h-0">
+    <div className="h-app-main -m-5 p-4 pt-3 min-h-0">
       <div className="grid grid-cols-1 lg:grid-cols-[350px_1fr] gap-6 h-full min-h-0">
         {/* 파일 목록 + 코멘트/상태(좌측으로 합치기) */}
         <div className="flex flex-col min-h-0">

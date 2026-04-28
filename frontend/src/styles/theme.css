@@ -1,4 +1,8 @@
 :root {
+/* Shell: TopBar height matches .topbar / .app-shell grid row */
+--app-topbar-h: 56px;
+/* Fill area below top bar; prefer dynamic viewport on tablet/mobile Safari */
+--app-main-fill-h: calc(100vh - var(--app-topbar-h));
 --brand: #0F0B98; /* navy */
 --brand-2: #1d4ed8; /* blue */
 --text: #0f172a; /* slate-900 */
@@ -14,6 +18,39 @@
 --shadow-card: 0 18px 40px -26px rgba(15, 23, 42, 0.45);
 --shadow-float: 0 22px 55px -30px rgba(15, 23, 42, 0.55);
 }
+
+@supports (height: 100dvh) {
+  :root {
+    --app-main-fill-h: calc(100dvh - var(--app-topbar-h));
+  }
+}
+
+/* Shared page chrome: one source of truth for “main column” min-height / height */
+.min-h-app-main {
+  min-height: var(--app-main-fill-h);
+}
+.h-app-main {
+  height: var(--app-main-fill-h);
+}
+
+/*
+  ProjectListTable: 사이드바(260px)로 메인이 좁아질 때 가로 스크롤 + 고정 높이 박스에서
+  가로 스크롤바가 세로 영역을 먹어 “아래가 잘림”처럼 보이는 현상 완화.
+  - 높이: 뷰포트 연동 + 기존 560px 상한을 약간 올려(가로 스크롤바 대비) 여유 확보
+  되돌리기: ProjectListTable에서 h-[560px] + 기존 min-w-[1120px] 단일값으로 복구
+*/
+.project-list-scroll {
+  box-sizing: border-box;
+  min-height: 260px;
+  height: min(576px, max(260px, calc(var(--app-main-fill-h) - 40px - 14rem)));
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-gutter: stable;
+}
+
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans KR", sans-serif; color: var(--text); }
 body { background: var(--bg); }
@@ -21,7 +58,7 @@ body { background: var(--bg); }
 
 /* Top bar */
 .topbar {
-height: 56px; display: flex; align-items: center; gap: 16px;
+height: var(--app-topbar-h); display: flex; align-items: center; gap: 16px;
 padding: 0 16px; background: var(--surface-2); border-bottom: 1px solid var(--line);
 backdrop-filter: blur(10px);
 }
@@ -34,7 +71,7 @@ backdrop-filter: blur(10px);
 
 
 /* Shell */
-.app-shell { display: grid; grid-template-rows: 56px 1fr; height: 100%; }
+.app-shell { display: grid; grid-template-rows: var(--app-topbar-h) 1fr; height: 100%; }
 /* NOTE: layout mechanics (sidebar slide) live in styles/sidebartoggle.css */
 .sidebar { padding: 16px; }
 .side-title { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; margin-bottom: 8px; }
@@ -97,6 +134,7 @@ backdrop-filter: blur(10px);
   /* prevent page-level horizontal scroll; tables should scroll inside their own box */
   overflow-y: auto;
   overflow-x: hidden;
+  min-height: 0;
 }
 .main.main-noscroll {
   overflow-y: hidden;

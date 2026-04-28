@@ -236,7 +236,7 @@ export default function IndividualQuestionReviewPage() {
   }, [projectGroups, selectedProjectId]);
 
   return (
-    <div className="h-[calc(100vh-56px)] -m-5 p-4 pt-3 min-h-0">
+    <div className="h-app-main -m-5 p-4 pt-3 min-h-0">
       <div className="grid grid-cols-1 lg:grid-cols-[350px_1fr] gap-6 h-full min-h-0">
         <div className="flex flex-col min-h-0">
           <div className="flex items-center justify-between pb-2">

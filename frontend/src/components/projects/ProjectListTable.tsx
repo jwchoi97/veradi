@@ -202,13 +202,10 @@ export default function ProjectListTable({
         </div>
       </div>
 
-      {/* ✅ Scroll is confined to the list box (not the whole page) */}
+      {/* 목록 스크롤은 이 박스 안(.project-list-scroll). 좁은 메인(사이드바 펼침)에서 가로 최소폭 완화 */}
       <div className="w-full max-w-full rounded-2xl border border-slate-200/60 bg-white overflow-hidden">
-        <div
-          className="h-[560px] max-w-full overflow-x-scroll overflow-y-auto overscroll-contain"
-          style={{ scrollbarGutter: "stable" as any }}
-        >
-          <table className="min-w-[1120px] w-full text-sm">
+        <div className="project-list-scroll">
+          <table className="w-full min-w-[min(100%,1120px)] text-sm">
             <thead className="bg-slate-50/90 backdrop-blur sticky top-0 z-10">
             <tr>
               {selectable ? (
